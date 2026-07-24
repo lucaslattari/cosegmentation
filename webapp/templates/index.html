@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cosegmentation Web</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container narrow">
+    <header>
+      <span class="eyebrow">ANÁLISE LOCAL</span>
+      <h1>Cosegmentation Web</h1>
+      <p>Arraste uma coleção de imagens, audite somente as features da Etapa 1 ou execute o pipeline completo.</p>
+    </header>
+
+    <form id="run-form" class="card" action="{{ url_for('create_run') }}" method="post" enctype="multipart/form-data">
+      {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+      <label for="collection">Nome da coleção</label>
+      <input id="collection" name="collection" value="Minha coleção" required>
+
+      <fieldset class="mode-picker">
+        <legend>O que deseja executar?</legend>
+        <label class="mode-option selected">
+          <input type="radio" name="mode" value="step1" checked>
+          <span><strong>Auditar Etapa 1</strong><small>DINOv2 + métricas, diagnóstico e gráficos</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="step2">
+          <span><strong>Auditar Etapa 2</strong><small>Etapa 1 + correspondências + métricas</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="step3">
+          <span><strong>Auditar Etapa 3</strong><small>E1 + E2 + co-saliência espectral + métricas</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="step4">
+          <span><strong>Auditar Etapa 4</strong><small>E1–E3 + SAM 2 + comparação com GT</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="pipeline">
+          <span><strong>Pipeline completo</strong><small>Etapas 1–5, incluindo SAM 2</small></span>
+        </label>
+      </fieldset>
+
+      <div id="step1-options" class="options-grid">
+        <div>
+          <label for="model">Modelo</label>
+          <select id="model" name="model">
+            <option value="dinov2_vits14" selected>DINOv2 ViT-S/14 (rápido)</option>
+            <option value="dinov2_vitb14">DINOv2 ViT-B/14</option>
+            <option value="dinov2_vitl14">DINOv2 ViT-L/14 (pesado)</option>
+          </select>
+        </div>
+        <div>
+          <label for="img_size">Resolução</label>
+          <select id="img_size" name="img_size">
+            <option value="448">448 px</option>
+            <option value="518" selected>518 px</option>
+            <option value="672">672 px</option>
+          </select>
+        </div>
+        <div>
+          <label for="resize">Redimensionamento</label>
+          <select id="resize" name="resize">
+            <option value="keep_ar" selected>Preservar proporção</option>
+            <option value="square">Forçar quadrado</option>
+          </select>
+        </div>
+        <div>
+          <label for="feature_mode">Features</label>
+          <select id="feature_mode" name="feature_mode">
+            <option value="l2" selected>Normalização L2</option>
+            <option value="raw">Raw</option>
+            <option value="pca128_l2">PCA 128 + L2</option>
+            <option value="pca256_l2">PCA 256 + L2</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="step2-options" class="options-grid hidden">
+        <div>
+          <label for="top_k">Quantidade de pares (top_k)</label>
+          <input id="top_k" name="top_k" type="number" min="1" max="500" step="1" value="10">
+        </div>
+        <div>
+          <label for="temperature">Temperatura</label>
+          <input id="temperature" name="temperature" type="number" min="0.001" max="1" step="0.001" value="0.05">
+        </div>
+        <p class="options-note">O número efetivo de pares é limitado por N(N−1)/2. Temperaturas menores deixam as afinidades mais nítidas.</p>
+      </div>
+
+      <div id="step3-options" class="options-grid hidden">
+        <div>
+          <label for="k_neighbors">Vizinhos no grafo (k_neighbors)</label>
+          <input id="k_neighbors" name="k_neighbors" type="number" min="1" max="100" step="1" value="10">
+        </div>
+        <div>
+          <label for="n_spectral">Componentes espectrais</label>
+          <input id="n_spectral" name="n_spectral" type="number" min="2" max="64" step="1" value="8">
+        </div>
+        <div>
+          <label for="n_clusters">Clusters K-means</label>
+          <input id="n_clusters" name="n_clusters" type="number" min="2" max="32" step="1" value="5">
+        </div>
+        <div>
+          <label for="fg_threshold">Threshold foreground</label>
+          <input id="fg_threshold" name="fg_threshold" type="number" min="0" max="1" step="0.01" value="0.5">
+        </div>
+        <div>
+          <label for="saliency_alpha">Peso do prior espacial (α)</label>
+          <input id="saliency_alpha" name="saliency_alpha" type="number" min="0" max="1" step="0.05" value="0.5">
+        </div>
+        <div class="checkbox-group">
+          <label class="checkbox-option"><input name="refine" type="checkbox"> Refinamento NCut intra-imagem (experimental)</label>
+          <label class="checkbox-option"><input name="adaptive_clusters" type="checkbox" checked> Clusters adaptativos ao padding</label>
+        </div>
+        <p class="options-note">A grade de ablação típica varia n_clusters ∈ {4,5,6,8}, k_neighbors ∈ {8,10,15}, threshold ∈ {0.4,0.5,0.6} e α ∈ {0.2,0.4,0.6,0.8}.</p>
+      </div>
+
+      <div id="step4-options" class="options-grid hidden">
+        <div>
+          <label for="sam_model">Modelo SAM 2</label>
+          <select id="sam_model" name="sam_model">
+            <option value="facebook/sam2.1-hiera-tiny">SAM 2.1 Hiera Tiny</option>
+            <option value="facebook/sam2.1-hiera-small" selected>SAM 2.1 Hiera Small</option>
+            <option value="facebook/sam2.1-hiera-base-plus">SAM 2.1 Hiera Base+</option>
+            <option value="facebook/sam2.1-hiera-large">SAM 2.1 Hiera Large</option>
+            <option value="facebook/sam2-hiera-tiny">SAM 2 Hiera Tiny</option>
+            <option value="facebook/sam2-hiera-small">SAM 2 Hiera Small</option>
+            <option value="facebook/sam2-hiera-base-plus">SAM 2 Hiera Base+</option>
+            <option value="facebook/sam2-hiera-large">SAM 2 Hiera Large</option>
+          </select>
+        </div>
+        <div>
+          <label for="prompt_mode">Estratégia de prompting</label>
+          <select id="prompt_mode" name="prompt_mode">
+            <option value="box_only">Somente bounding box</option>
+            <option value="box_points">Box + pontos FG/BG</option>
+            <option value="box_points_mask" selected>Box + pontos + máscara E3</option>
+          </select>
+        </div>
+        <div>
+          <label for="sam_n_iter">Iterações SAM</label>
+          <input id="sam_n_iter" name="sam_n_iter" type="number" min="1" max="5" step="1" value="2">
+        </div>
+        <p class="options-note">A auditoria compara E3 e E4 por imagem. Com GT, calcula IoU real, ganho do SAM e mapas de TP, FP e FN.</p>
+      </div>
+
+      <label>Imagens (mínimo de duas)</label>
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-controls="images">
+        <strong>Arraste as imagens aqui</strong>
+        <span id="file-summary">ou clique para escolher — JPG, PNG, BMP ou TIFF</span>
+      </div>
+      <input class="hidden" id="images" name="images" type="file" accept="image/*" multiple required>
+      <div id="preview" class="preview-strip" aria-live="polite"></div>
+
+      <div id="gt-upload">
+        <label>Ground truths (opcional, um por imagem)</label>
+        <div class="dropzone dropzone-gt" id="gt-dropzone" role="button" tabindex="0" aria-controls="ground-truths">
+          <strong>Arraste as máscaras binárias aqui</strong>
+          <span id="gt-file-summary">Use o mesmo nome da imagem ou acrescente _mask / _gt</span>
+        </div>
+        <input class="hidden" id="ground-truths" name="ground_truths" type="file" accept="image/*" multiple>
+        <div id="gt-preview" class="preview-strip" aria-live="polite"></div>
+        <p class="field-help">Exemplo: <code>urso_01.jpg</code> ↔ <code>urso_01_mask.png</code>. Branco representa foreground e preto, background.</p>
+      </div>
+
+      <button id="submit-button" type="submit">
+        <span class="button-label">Executar auditoria da Etapa 1</span>
+        <span class="button-spinner" aria-hidden="true"></span>
+      </button>
+      <p id="submit-status" class="submit-status hidden" role="status" aria-live="polite">Enviando arquivos e preparando a execução...</p>
+    </form>
+  </main>
+  <script>
+    const input = document.querySelector('#images');
+    const options = document.querySelector('#step1-options');
+    const step2Options = document.querySelector('#step2-options');
+    const step3Options = document.querySelector('#step3-options');
+    const step4Options = document.querySelector('#step4-options');
+    const gtUpload = document.querySelector('#gt-upload');
+    const form = document.querySelector('#run-form');
+    const submit = document.querySelector('#submit-button');
+    const submitLabel = submit.querySelector('.button-label');
+    const submitStatus = document.querySelector('#submit-status');
+
+    function updateFiles(fileInput, summary, preview, emptyText, noun) {
+      const files = [...fileInput.files];
+      summary.textContent = files.length ? `${files.length} ${noun}(ns) selecionado(s)` : emptyText;
+      preview.innerHTML = '';
+      files.slice(0, 8).forEach(file => {
+        const img = document.createElement('img');
+        img.alt = file.name;
+        img.title = file.name;
+        img.src = URL.createObjectURL(file);
+        img.onload = () => URL.revokeObjectURL(img.src);
+        preview.appendChild(img);
+      });
+      if (files.length > 8) {
+        const more = document.createElement('span');
+        more.textContent = `+${files.length - 8}`;
+        preview.appendChild(more);
+      }
+    }
+
+    function wireDropzone(dropzoneId, inputId, summaryId, previewId, emptyText, noun) {
+      const zone = document.querySelector(dropzoneId);
+      const fileInput = document.querySelector(inputId);
+      const summary = document.querySelector(summaryId);
+      const preview = document.querySelector(previewId);
+      const refresh = () => updateFiles(fileInput, summary, preview, emptyText, noun);
+      zone.addEventListener('click', () => fileInput.click());
+      zone.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); fileInput.click(); }
+      });
+      ['dragenter', 'dragover'].forEach(name => zone.addEventListener(name, event => {
+        event.preventDefault(); zone.classList.add('dragging');
+      }));
+      ['dragleave', 'drop'].forEach(name => zone.addEventListener(name, event => {
+        event.preventDefault(); zone.classList.remove('dragging');
+      }));
+      zone.addEventListener('drop', event => {
+        const transfer = new DataTransfer();
+        [...event.dataTransfer.files].filter(file => file.type.startsWith('image/')).forEach(file => transfer.items.add(file));
+        fileInput.files = transfer.files;
+        refresh();
+      });
+      fileInput.addEventListener('change', refresh);
+    }
+    wireDropzone('#dropzone', '#images', '#file-summary', '#preview', 'ou clique para escolher — JPG, PNG, BMP ou TIFF', 'imagem');
+    wireDropzone('#gt-dropzone', '#ground-truths', '#gt-file-summary', '#gt-preview', 'Use o mesmo nome da imagem ou acrescente _mask / _gt', 'máscara');
+
+    document.querySelectorAll('input[name="mode"]').forEach(radio => radio.addEventListener('change', () => {
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      const audit = ['step1', 'step2', 'step3', 'step4'].includes(mode);
+      options.classList.toggle('hidden', !audit);
+      step2Options.classList.toggle('hidden', !['step2', 'step3', 'step4'].includes(mode));
+      step3Options.classList.toggle('hidden', !['step3', 'step4'].includes(mode));
+      step4Options.classList.toggle('hidden', mode !== 'step4');
+      gtUpload.classList.remove('hidden');
+      submitLabel.textContent = mode === 'step1' ? 'Executar auditoria da Etapa 1'
+        : mode === 'step2' ? 'Executar auditoria da Etapa 2'
+        : mode === 'step3' ? 'Executar auditoria da Etapa 3'
+        : mode === 'step4' ? 'Executar auditoria da Etapa 4'
+        : 'Executar cosegmentação completa';
+      document.querySelectorAll('.mode-option').forEach(option => option.classList.toggle('selected', option.querySelector('input').checked));
+    }));
+
+    form.addEventListener('submit', event => {
+      if (!form.checkValidity()) return;
+      if (submit.disabled) {
+        event.preventDefault();
+        return;
+      }
+      submit.disabled = true;
+      submit.classList.add('is-loading');
+      submit.setAttribute('aria-busy', 'true');
+      submitLabel.textContent = 'Preparando execução...';
+      submitStatus.classList.remove('hidden');
+    });
+  </script>
+</body>
+</html>

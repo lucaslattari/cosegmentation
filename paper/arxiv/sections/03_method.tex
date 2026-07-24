@@ -1,0 +1,264 @@
+\subsection{Method Overview}
+
+The problem is defined as follows. Consider an image collection $\mathcal{I} = {I_1, \dots, I_n}$ belonging to the same class. Our goal is to produce a set of binary segmentation masks $\mathcal{M} = {M_1, \dots, M_n}$ that identifies the common foreground across the collection. We assume that each image $I_i$ contains a visually consistent common foreground.
+
+The proposed method differs from single-image segmentation, since the computation of each segmentation mask is based on the entire image collection $\mathcal{I}$. Moreover, it follows a training-free approach: no stage of the pipeline is trained or fine-tuned specifically for cosegmentation. All pretrained components are used as provided, without task-specific adaptation.
+
+Our hypothesis is that patches belonging to the common foreground tend to present similar visual semantics among the images in the collection. These similarities can be used to compute cross-image correspondences. However, recurring background patterns introduce an additional challenge, since visually similar regions may also be shared by multiple images. Because of that, our method combines semantic patch representations, cross-image correspondence structure, spectral graph analysis, recurring-background suppression, spatial priors, and foundation-model-based mask refinement.
+
+Initially, we extract patch features using DINOv2~\cite{oquab2023dinov2} (stage E1). We then select similar image pairs and, for each pair, construct a joint patch-affinity graph that is partitioned using Normalized Cuts~\cite{shi2000normalized}. The resulting pairwise foreground decisions are aggregated into correspondence scores for each patch (stage E2). After NCut, we suppress evidence associated with recurring background patterns (stage E2B). Stage E3 performs global spectral clustering over the entire image collection and combines the resulting patch clusters with correspondence and spatial evidence to produce a coarse foreground mask for each image. Stage E4 employs SAM2~\cite{ravi2024sam2}, a foundation model for promptable visual segmentation, to convert coarse co-saliency estimates into spatially precise object masks. Finally, stage E5 iteratively refines the masks until convergence. Fig.~\ref{fig:pipeline} depicts the entire pipeline.
+\begin{figure*}[t]
+\centering
+
+\resizebox{0.98\textwidth}{!}{%
+\begin{tikzpicture}[
+    node distance=0.65cm,
+    block/.style={
+        draw,
+        rounded corners,
+        align=center,
+        font=\footnotesize,
+        minimum width=2.05cm,
+        minimum height=0.85cm,
+        inner sep=3pt
+    },
+    arrow/.style={
+        -{Latex[length=2.2mm]},
+        thick
+    },
+    level/.style={
+        font=\scriptsize
+    },
+    stagebar/.style={
+        {Latex[length=1.8mm]}-{Latex[length=1.8mm]},
+        thin
+    }
+]
+
+% -------------------------------------------------------------------------
+% Pipeline stages
+% -------------------------------------------------------------------------
+
+\node[block] (e1)
+    {DINOv2\\Feature Extraction};
+
+\node[block, right=of e1] (e2)
+    {Cross-Image\\Correspondence};
+
+\node[block, right=of e2] (e2b)
+    {Background\\Suppression};
+
+\node[block, right=of e2b] (e3)
+    {Spectral\\Co-Saliency};
+
+\node[block, right=of e3] (e4)
+    {SAM2\\Refinement};
+
+\node[block, right=of e4] (e5)
+    {Iterative\\Refinement};
+
+
+% -------------------------------------------------------------------------
+% Pipeline arrows
+% -------------------------------------------------------------------------
+
+\draw[arrow] (e1) -- (e2);
+\draw[arrow] (e2) -- (e2b);
+\draw[arrow] (e2b) -- (e3);
+\draw[arrow] (e3) -- (e4);
+\draw[arrow] (e4) -- (e5);
+
+
+% -------------------------------------------------------------------------
+% Processing granularity
+% -------------------------------------------------------------------------
+
+\node[level, below=0.20cm of e1]  (l1) {Patch};
+\node[level, below=0.20cm of e2]  (l2) {Patch};
+\node[level, below=0.20cm of e2b] (l2b) {Patch};
+\node[level, below=0.20cm of e3]  (l3) {Patch};
+\node[level, below=0.20cm of e4]  (l4) {Pixel};
+\node[level, below=0.20cm of e5]  (l5) {Pixel};
+
+
+% -------------------------------------------------------------------------
+% Conceptual processing levels
+% -------------------------------------------------------------------------
+
+\draw[stagebar]
+    ([yshift=-0.95cm]e1.south west)
+    --
+    node[
+        midway,
+        fill=white,
+        inner sep=2pt,
+        font=\scriptsize
+    ] {Patch-level reasoning}
+    ([yshift=-0.95cm]e3.south east);
+
+\draw[stagebar]
+    ([yshift=-0.95cm]e4.south west)
+    --
+    node[
+        midway,
+        fill=white,
+        inner sep=2pt,
+        font=\scriptsize
+    ] {Pixel-level refinement}
+    ([yshift=-0.95cm]e5.south east);
+
+\draw[dashed, thin]
+    ($(e3.south east)!0.5!(e4.south west)+(0,-0.22)$)
+    --
+    ($(e3.south east)!0.5!(e4.south west)+(0,-1.28)$);
+
+
+% -------------------------------------------------------------------------
+% Granularity transition marker
+% -------------------------------------------------------------------------
+
+\draw[dashed, thin]
+    ($(e3.south east)!0.5!(e4.south west)+(0,-0.15)$)
+    --
+    ($(e3.south east)!0.5!(e4.south west)+(0,-1.05)$);
+
+\end{tikzpicture}%
+}
+
+\caption{
+Overview of the proposed training-free image co-segmentation pipeline.
+The first stages perform collection-level reasoning at patch granularity,
+using self-supervised features, cross-image correspondences, recurring-background
+suppression, and spectral co-saliency analysis.
+The resulting coarse foreground estimates are subsequently converted into
+pixel-level masks through SAM2-based refinement and iterative mask refinement.
+}
+\label{fig:pipeline}
+
+\end{figure*}
+
+The following subsections describe each component of the proposed framework in detail.
+
+\subsection{Self-Supervised Patch Feature Extraction}
+
+Object cosegmentation requires identifying semantically corresponding
+foreground regions across images despite variations in appearance, pose,
+scale, viewpoint, illumination, and spatial
+location~\cite{rubinstein2013unsupervised, bristow2015dense}. Handcrafted
+descriptors such as SIFT and HOG offer some geometric and photometric
+invariance, but this is not inherently semantic and may be insufficient
+under large intra-class variation~\cite{bristow2015dense,
+kim2017fcss}. Self-supervised Vision Transformer features, in contrast,
+encode spatially localized semantic information and have proven
+effective as dense descriptors for zero-shot semantic correspondence and
+object cosegmentation~\cite{oquab2024dinov2,amir2023effectiveness}.
+
+Stage E1 converts each image into a spatial grid of self-supervised
+DINOv2 descriptors~\cite{oquab2024dinov2}; no cross-image reasoning is
+performed here, and the resulting descriptors constitute the shared
+representation consumed by all later stages. Given a collection
+$\mathcal{I}=\{I_1,\dots,I_n\}$, each image is encoded by a frozen
+ViT-S/14 backbone $\Phi$, which operates on non-overlapping
+$14\times14$-pixel patches and outputs one descriptor per patch, plus a
+global class token. For image $I_i$, this yields a patch-token grid of
+$H_p \times W_p = P$ patches, with $\mathbf{f}_i^{(u)} \in
+\mathbb{R}^D$ ($D=384$; see Sec.~\ref{sec:ablation-backbone}) denoting
+the descriptor of patch $u \in \{1,\dots,P\}$, stacked into
+\begin{equation}
+\mathbf{F}_i =
+\begin{bmatrix} \mathbf{f}_i^{(1)} \\ \vdots \\ \mathbf{f}_i^{(P)} \end{bmatrix}
+\in \mathbb{R}^{P \times D},
+\end{equation}
+together with a global class token $\mathbf{c}_i \in \mathbb{R}^D$,
+retained for image-level use in Sec.~\ref{sec:e2}. Descriptors are taken
+from the last transformer block with the backbone's final layer
+normalisation applied
+\footnote{Via \texttt{get\_intermediate\_layers(n=1,
+return\_class\_token=True)}, which applies this normalisation by
+default.} — the representation exposed by DINOv2's own frozen-feature
+evaluation protocol. Earlier blocks or attention-key facets have been
+reported preferable for semantic correspondence in prior
+work~\cite{amir2023effectiveness}; we do not ablate this axis, so results
+in Sec.~\ref{sec:results} reflect the backbone as released.
+
+\subsubsection{Aspect-Ratio-Preserving Encoding}
+
+The global patch graph of Sec.~\ref{sec:e3} connects patches across
+images, which requires a fixed token count $P$ for every image and
+therefore a common input resolution. Resizing anisotropically to
+$S\times S$ would satisfy this but distort object shape. We instead
+resize isotropically so the longest side matches $S$, then pad to a
+square canvas with per-channel ImageNet means (less disruptive to a
+pretrained backbone than black/white padding). With $S=518=37\times 14$,
+every image yields a $37\times 37$ grid, $P=1369$. This preserves aspect
+ratio at the cost of introducing content-free patches.
+
+\subsubsection{Valid-Patch Bookkeeping}
+
+For each image, E1 persists the rescaling geometry
+$(h_i', w_i', \delta_i^{\text{top}}, \delta_i^{\text{left}})$, from which
+later stages derive a validity mask $\mathcal{V}_i$: a patch is retained
+if its extent overlaps the rescaled image region, so only patches lying
+entirely within the padding margins are discarded. Because all images
+share the same constant-colour padding, fully padded patches are
+near-identical within and across images and would otherwise register as
+the most consistently repeated content in the collection — a systematic
+false positive under any recurrence-based foreground criterion. Boundary
+patches straddling the content border still encode real structure and
+are kept. Invalid patches are removed as nodes from the sparse global
+patch graph (Sec.~\ref{sec:e3}), rather than zeroed, since zeroed but
+present nodes would still contribute to degree statistics and Laplacian
+normalisation and could absorb one of the $K$ spectral clusters. The same
+mask excludes invalid patches from the pairwise foreground voting of
+Sec.~\ref{sec:e2}, and predicted masks are cropped to the content region
+before evaluation.
+
+Patch and class-token descriptors are $\ell_2$-normalised before being
+written to disk, so that inner products reduce to cosine similarity,
+bounded in $[-1,1]$ and comparable across images and collections — this
+also keeps the softmax temperature of Sec.~\ref{sec:e2} on a consistent
+scale, independent of each patch's raw activation strength.
+
+Feature extraction runs once per collection, with no stochastic
+component (inference mode, no augmentation, no gradient), and persists
+descriptors together with patch-grid dimensions, original image sizes,
+and rescaling geometry, so patch indices can always be mapped back to
+pixel coordinates. All later ablations therefore read from identical
+descriptors, isolating each stage's contribution. Unless stated
+otherwise, all experiments use ViT-S/14 at $S=518$ with
+aspect-ratio-preserving encoding and $\ell_2$-normalised descriptors
+(Table~\ref{tab:production-defaults} lists the full set of calibrated
+defaults for every stage).
+
+The patch grid also lower-bounds the spatial detail E1 can represent:
+each token summarises a $14\times14$ region of the padded canvas
+(\textasciitilde$13.5\times13.5$ px of the original image for iCoseg,
+whose images are rarely larger than $500$ px on the longest side, so
+rescaling discards no pixel information). Elongated structures narrower
+than this extent — limbs, poles, cables — are not resolved by any single
+descriptor and cannot be recovered by the refinement stages of
+Sec.~\ref{sec:e4}--\ref{sec:e5}, which adjust boundaries but inherit the
+coarse foreground estimate from patch-level reasoning. This is a
+distinct failure mode from the merging of nearby object instances, which
+originates in the correspondence and clustering stages rather than in
+the representation (Sec.~\ref{sec:limitations} discusses both, and a
+preliminary multi-scale feature fusion experiment aimed at the former).
+
+\subsection{Cross-Image Correspondence Graph Construction}
+\label{sec:e2}
+
+\subsubsection{Degree-Based Affinity Reweighting}
+
+\subsection{Recurring-Background Suppression}
+
+\subsection{Spectral Co-Saliency Estimation}
+
+\subsubsection{Adaptive Empty-Foreground Recovery}
+
+Foreground-orientation and graph construction retain any patch overlapping the content region, whereas the recovery mechanism and the background model of Sec.~\ref{sec:e2b} require the patch centre to fall inside it. The stricter criterion excludes boundary patches that are predominantly padding, whose descriptors are constant across the collection; both mechanisms select patches by similarity to a reference set, and are therefore sensitive to that degeneracy in a way that graph partitioning is not.
+
+\subsection{Foundation Model-Based Mask Refinement}
+
+\subsubsection{Initial SAM2 Refinement}
+
+\subsubsection{Iterative Mask Refinement}

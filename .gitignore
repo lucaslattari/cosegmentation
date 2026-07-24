@@ -1,0 +1,91 @@
+# =============================================================================
+# .gitignore — cosegmentation
+# Baseado no scan de repo_scan.log (1922 arquivos / 133 pastas)
+# =============================================================================
+
+# --- Python ------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+.ipynb_checkpoints/
+.pytest_cache/
+
+# --- Ambiente (pyenv/conda) ---------------------------------------------
+# .coseg_wsl não deveria viver dentro do projeto — considere mover pra
+# fora de cosegmentation/ (ex.: gerenciado pelo pyenv/conda fora do repo).
+# Mantido aqui como rede de segurança enquanto isso não for feito.
+.coseg_wsl/
+.venv/
+venv/
+
+# --- Lixo de sistema operacional -----------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+# __MACOSX/ é lixo de descompactação de .zip no macOS — recomendo deletar
+# com `rm -rf __MACOSX` em vez de só ignorar, mas fica aqui como segurança
+# caso reapareça.
+__MACOSX/
+
+# --- Editor / IDE --------------------------------------------------------
+.vscode/
+.idea/
+
+# --- Dados e artefatos regeneráveis do pipeline ---------------------------
+# Dataset bruto: documentar no README como obter, não versionar imagens.
+datasets/
+# Features/resultados/logs são regenerados por run_pipeline.sh; não são
+# código, e alguns (features/*.npz) podem ficar grandes.
+features/
+results/
+logs/
+ablation_results/
+# Notas/arquivos soltos de comparação manual na raiz (ex.: comparacao_e2_*.txt,
+# overnight_*.log) — se preferir manter algum como referência, mova para
+# old experiments/ e remova do padrão abaixo.
+comparacao_*.txt
+overnight_*.log
+*.log
+
+# --- Experimentos/código histórico (mantidos em disco, fora do git) -------
+old experiments/
+# NOTA: "old scripts/" continha ablation_e1_resolution_multiscale.py, que é
+# o experimento de fusão multi-escala ainda pendente de validação (não é
+# histórico morto) — foi movido para ablation/ e renomeado para
+# e1_ablation_resolution_multiscale.py. Removido daqui de propósito.
+#
+# archive/legacy/ foi deletado (código pré-alpha descartado, sem valor de
+# referência) — não precisa de regra aqui, só não deve mais existir em disco.
+
+# diagnostics/ (e ablation/diagnostics/, que parecia duplicado): movendo para
+# dentro de old experiments/ até você confirmar se é referência a manter ou
+# se pode ser regenerado a qualquer momento a partir de object_size_vs_oracle.
+# Se mover fisicamente para dentro de old experiments/, esta linha fica
+# redundante e pode ser removida.
+diagnostics/
+
+# --- App em revisão (NÃO ignorado — ver observação abaixo) ---------------
+# webapp/ e study/ ficam DE FORA deste .gitignore de propósito: são código
+# real (Flask app, notebooks didáticos), não artefato regenerável.
+# Se depois decidir por outro caminho, adicione aqui.
+
+# --- LaTeX / paper (ajustar depois de ver o conteúdo real de paper/) ------
+*.aux
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.out
+*.toc
+
+# --- Confirmado: gerado automaticamente pelo pipeline ----------------------
+# gt_index.json (raiz): gerado por setup_gt_index() em run_pipeline.sh.
+gt_index.json
+
+# --- TODO — ainda pendente --------------------------------------------------
+# paper/: depende do que tem lá dentro (fonte LaTeX vs. build artifacts).
+# As regras de *.aux/*.bbl/etc. acima cobrem build do LaTeX, mas revise
+# quando você organizar essa pasta.

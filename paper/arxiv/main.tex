@@ -1,0 +1,111 @@
+\documentclass[conference]{IEEEtran}
+
+% -----------------------------------------------------------------------------
+% Core packages
+% -----------------------------------------------------------------------------
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc}
+
+% Figures are stored in paper/figures/.
+\graphicspath{{figures/}}
+
+% BibTeX logo.
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+% -----------------------------------------------------------------------------
+% Title and authors
+% -----------------------------------------------------------------------------
+\title{Training-Free Image Cosegmentation with Foundation Model Features and Spectral Analysis}
+
+% TODO: Replace the placeholders below with the final author list and
+% affiliations. Add additional \and blocks as needed.
+\author{
+\IEEEauthorblockN{Lucas Lattari}
+\IEEEauthorblockA{
+\textit{Instituto Federal do Sudeste de Minas Gerais}\\
+Rio Pomba, Brazil
+}
+\and
+\IEEEauthorblockN{Second Author}
+\IEEEauthorblockA{
+\textit{Department or Institution}\\
+City, Country
+}
+}
+
+\maketitle
+
+% -----------------------------------------------------------------------------
+% Abstract and keywords
+% -----------------------------------------------------------------------------
+\begin{abstract}
+% TODO: Write the abstract after the main contributions and experimental
+% results have stabilized. A useful structure is:
+% context/problem -> gap -> proposed approach -> main results -> conclusion.
+This extended manuscript presents an image co-segmentation framework.
+The abstract will be completed as the manuscript and experimental analysis
+are consolidated.
+\end{abstract}
+
+\begin{IEEEkeywords}
+image co-segmentation, computer vision, self-supervised learning,
+visual representations, spectral methods, foundation models
+\end{IEEEkeywords}
+
+% -----------------------------------------------------------------------------
+% Main text
+% -----------------------------------------------------------------------------
+\section{Introduction}
+\input{sections/01_introduction}
+
+\section{Related Work}
+\input{sections/02_related_work}
+
+\section{Proposed Method}
+\input{sections/03_method}
+
+\section{Experimental Setup}
+\input{sections/04_experimental_setup}
+
+\section{Results}
+\input{sections/05_results}
+
+\section{Ablation Studies}
+\input{sections/06_ablation}
+
+\section{Discussion}
+\input{sections/07_discussion}
+
+\section{Conclusion}
+\input{sections/08_conclusion}
+
+% -----------------------------------------------------------------------------
+% Acknowledgments
+% -----------------------------------------------------------------------------
+% Uncomment when needed.
+%
+% \section*{Acknowledgment}
+% The authors would like to thank ...
+
+% -----------------------------------------------------------------------------
+% References
+% -----------------------------------------------------------------------------
+% During the initial drafting stage, \nocite{*} allows BibTeX to compile even
+% before explicit citations are added. Remove \nocite{*} before submission so
+% that only cited references appear in the bibliography.
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

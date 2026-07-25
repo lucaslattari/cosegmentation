@@ -120,7 +120,7 @@ except Exception:
 # step1_feature_extraction diretamente.
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 PIPELINE_DIR = PROJECT_ROOT / "pipeline"
 
 if str(PIPELINE_DIR) not in sys.path:
@@ -138,7 +138,7 @@ try:
     # ablation/analyze_step1_features.py
     # Como este script também está em ablation/, o Python já encontra
     # este módulo no diretório do próprio script.
-    from analyze_step1_features import (
+    from e1_analyze_features  import (
         load_gt_index,
         load_patch_gt_masks,
         compute_content_mask,

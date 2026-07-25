@@ -97,7 +97,7 @@ except Exception:
 # duplicá-la. Ajuste o import abaixo se o módulo estiver em outro caminho.
 # ---------------------------------------------------------------------------
 try:
-    from analyze_step1_features import (
+    from e1_analyze_features import (
         load_features,
         compute_content_mask,
         load_gt_index,

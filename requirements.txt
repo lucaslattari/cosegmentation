@@ -1,0 +1,62 @@
+# =============================================================================
+# requirements.txt — cosegmentation (setup Colab)
+#
+# Baseado em requirements_local_exact.txt (pip freeze real do ambiente
+# coseg_wsl). Filtrado: tooling de Jupyter/JupyterLab local (jupyterlab,
+# notebook, ipykernel, nbconvert, etc.) foi REMOVIDO porque o Colab já roda
+# seu próprio Jupyter — reinstalar esse stack por cima é redundante e pode
+# conflitar com o ambiente gerenciado do Colab.
+#
+# torch/torchvision/torchaudio e SAM-2 NÃO estão aqui — instalação especial
+# no notebook (ver células 4 e 5), porque precisam do índice de wheels CUDA
+# certo (cu126) e, no caso do SAM-2, de um commit fixado.
+# =============================================================================
+
+# --- Core numérico / científico ---------------------------------------------
+numpy==2.4.4
+scipy==1.17.1
+scikit-learn==1.9.0
+scikit-image==0.26.0
+pandas==3.0.3
+
+# --- Imagem / visão -------------------------------------------------------
+pillow==12.2.0
+opencv-python==4.13.0.92
+matplotlib==3.10.9
+ImageIO==2.37.3
+tifffile==2026.6.1
+lazy-loader==0.5
+
+# --- Clustering / dimensionalidade (usados em variantes de E3 exploradas) --
+hdbscan==0.8.44
+umap-learn==0.5.12
+pynndescent==0.6.0
+numba==0.65.1
+llvmlite==0.47.0
+
+# --- Hub de modelos (download do DINOv2) ------------------------------------
+huggingface_hub==1.18.0
+hf-xet==1.5.0
+
+# --- SAM2: dependências de configuração (o pacote sam2 em si é instalado
+# separadamente na célula 5 do notebook, mas essas libs de config/IO ele usa) -
+hydra-core==1.3.2
+omegaconf==2.3.0
+iopath==0.1.10
+portalocker==3.2.0
+
+# --- Utilitários gerais -----------------------------------------------------
+tqdm==4.68.1
+PyYAML==6.0.3
+requests==2.34.2
+filelock==3.29.0
+packaging==26.2
+typing_extensions==4.15.0
+
+# --- Webapp Flask (só necessário se for testar webapp/ no Colab) -----------
+# Flask==3.1.3
+# Werkzeug==3.1.8
+# Jinja2==3.1.6
+# click==8.4.1
+# itsdangerous==2.2.0
+# blinker==1.9.0

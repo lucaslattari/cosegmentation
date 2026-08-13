@@ -26,9 +26,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 PIPELINE="$PROJECT_ROOT/pipeline/run_pipeline.sh"
-MATERIALIZER="$SCRIPT_DIR/materialize_e3_adaptive_bypass.py"
+MATERIALIZER="$PROJECT_ROOT/ablation/e3/e3_materialize_adaptive_bypass.py"
 PYTHON="${PYTHON:-python3}"
 
 DATASET_SET=""

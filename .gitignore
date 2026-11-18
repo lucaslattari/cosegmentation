@@ -66,11 +66,13 @@ old experiments/
 # redundante e pode ser removida.
 diagnostics/
 
-# --- Outros ---------------
-/webapp/
-/study/
+# Local documentation and supplementary projects
+/figures/
 /paper/
-/presentations/
+/study/
+/webapp/
+
+# --- Outros ---------------
 /features_sweep_selected/
 /geometric_priors_staging/
 /airshows_report/

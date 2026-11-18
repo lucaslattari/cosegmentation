@@ -861,8 +861,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--project-root",
         type=Path,
-        default=Path(__file__).resolve().parents[1],
-        help="Raiz do projeto. Default: diretório pai de ablation/.",
+        default=Path(__file__).resolve().parents[2],
+        help="Raiz do projeto. Default: dois níveis acima do script (ablation/e2b/ -> raiz).",
     )
     parser.add_argument(
         "--baseline-features-root",

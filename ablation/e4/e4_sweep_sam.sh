@@ -55,6 +55,14 @@ SELECTED_CLASSES=(
     "Brown Bear"
 )
 
+# Sanidade: este sweep sempre rodou sobre este conjunto fixo de 14 classes.
+# Se a lista for editada, o aviso evita rodar silenciosamente sobre um
+# subconjunto diferente do que foi usado nos sweeps anteriores (E1/E3).
+EXPECTED_N_SELECTED_CLASSES=14
+if [[ "${#SELECTED_CLASSES[@]}" -ne "$EXPECTED_N_SELECTED_CLASSES" ]]; then
+  echo "[AVISO] SELECTED_CLASSES tem ${#SELECTED_CLASSES[@]} classes (esperado: $EXPECTED_N_SELECTED_CLASSES). Confirme se isso é intencional." >&2
+fi
+
 # Defaults
 STEP1_NPZ_ROOT="./features_sweep_selected/npz"
 STEP3_NPZ_ROOT="./cosaliency_sweep/npz"
@@ -228,7 +236,7 @@ TOP10_MD="$OUT_ROOT/top10_aggregate.md"
 BEST_BY_CLASS_TSV="$OUT_ROOT/best_by_class.tsv"
 TIMING_TSV="$OUT_ROOT/timing.tsv"
 
-printf "class_name\tstep1_stem\tstep3_stem\tprompt_mode\tn_iter\tsam_model\tN\tsam_iou_mean\tsam_iou_std\tsam_iou_n_low\tfg_coherence\tfg_frac_mean\tspatial_coh\te3_fg_frac\te4_fg_frac\tgt_iou_mean\tiou_gain_mean\tn_improved\tn_degraded\tproxy_score\tstep4_npz\tanalyzer_report\n" > "$METRICS_TSV"
+printf "class_name\tstep1_stem\tstep3_stem\tprompt_mode\tn_iter\tsam_model\tN\tsam_iou_mean\tsam_iou_std\tsam_iou_n_low\tfg_coherence\tfg_frac_mean\tspatial_coh\te3_fg_frac\te4_fg_frac\tgt_iou_mean\tiou_gain_mean\tn_improved\tn_degraded\te3_iou_mean_gt\te4_iou_mean_gt\tproxy_score\tstep4_npz\tanalyzer_report\n" > "$METRICS_TSV"
 printf "run_index\ttotal_runs\tclass_name\tstep1_stem\tstep3_stem\tprompt_mode\tn_iter\tsam_model\tstatus\tstarted_at\tfinished_at\telapsed_sec\telapsed_hms\tavg_sec\tremaining_runs\test_sec\test_hms\test_finish\tstep4_npz\tlog\tanalyzer_report\n" > "$TIMING_TSV"
 
 # Descobre pares (e1_npz, e3_npz) por classe
@@ -244,11 +252,20 @@ for cls in "${CLASSES[@]}"; do
   while IFS= read -r -d '' e1_npz; do
     e1_base="$(basename "$e1_npz" .npz)"
     [[ -n "$STEP1_CONFIG_FILTER" ]] && ! echo "$e1_base" | grep -q "$STEP1_CONFIG_FILTER" && continue
+    # Alguns sweeps de E1 prefixam o stem com "<Classe>__" (redundante, já que
+    # o arquivo já está na pasta da classe); os de E3 nem sempre repetem esse
+    # prefixo. Tira o prefixo "<safe_cls>__" de ambos antes de comparar, para
+    # não depender de qual dos dois geradores decidiu incluí-lo.
+    e1_match="$e1_base"
+    [[ "$e1_match" == "${safe_cls}__"* ]] && e1_match="${e1_match#${safe_cls}__}"
     while IFS= read -r -d '' e3_npz; do
       e3_base="$(basename "$e3_npz" .npz)"
       [[ -n "$STEP3_CONFIG_FILTER" ]] && ! echo "$e3_base" | grep -q "$STEP3_CONFIG_FILTER" && continue
-      # E3 stem contém E1 stem como prefixo (mesma convenção das etapas anteriores)
-      [[ "$e3_base" == "${e1_base}"* ]] || continue
+      e3_match="$e3_base"
+      [[ "$e3_match" == "${safe_cls}__"* ]] && e3_match="${e3_match#${safe_cls}__}"
+      # E3 stem (sem prefixo de classe) contém E1 stem (sem prefixo de classe)
+      # como prefixo -- mesma convenção das etapas anteriores.
+      [[ "$e3_match" == "${e1_match}"* ]] || continue
       pairs+=("${e1_npz}|${e3_npz}")
     done < <(find "$e3_dir" -maxdepth 1 -name "*.npz" -print0 | sort -z)
   done < <(find "$e1_dir" -maxdepth 1 -name "*.npz" -print0 | sort -z)
@@ -372,6 +389,7 @@ try:
     # Lê métricas GT do json do analisador.
     # O diretório é único por configuração: <stem>__quality/step4_quality.json
     gt_iou = gain = n_improved = n_degraded = "nan"
+    e3_iou_gt = e4_iou_gt = "nan"
     stem = Path(analyzer_report).stem.replace(".analysis", "")
     json_path = Path(analyzer_report).parent / f"{stem}__quality" / "step4_quality.json"
     if json_path.exists():
@@ -382,6 +400,13 @@ try:
             gain        = safe(m.get("iou_gain_mean"))
             n_improved  = str(m.get("n_images_improved", "nan"))
             n_degraded  = str(m.get("n_images_degraded", "nan"))
+            # Baseline pareado: IoU real da E3 (pré-SAM) e da E4, calculado
+            # sobre exatamente o mesmo subconjunto de imagens com GT válido
+            # usado para o gain — é o número certo para a linha de baseline
+            # da tabela de ablação (gt_iou_mean acima não é necessariamente
+            # pareado com E3 se cosaliency.npz tiver imagens a mais/a menos).
+            e3_iou_gt   = safe(m.get("e3_iou_mean"))
+            e4_iou_gt   = safe(m.get("e4_iou_mean"))
         except Exception:
             pass
 
@@ -403,6 +428,7 @@ try:
         safe(fg_coh), safe(fg_frac_mean), spatial_coh,
         e3_frac, safe(fg_frac_mean),
         gt_iou, gain, str(n_improved), str(n_degraded),
+        e3_iou_gt, e4_iou_gt,
         safe(proxy), str(Path(step4_npz)), str(Path(analyzer_report)),
     ]
     print("\t".join(values))
@@ -487,23 +513,40 @@ with metrics_tsv.open("r", encoding="utf-8", newline="") as f:
     rows = list(csv.DictReader(f, delimiter="\t"))
 rows = [r for r in rows if safe(r.get("proxy_score")) is not None]
 
+# Critério de ranking: quando há GT (iou_gain_mean real da E3->E4), ele SEMPRE
+# prevalece sobre o proxy_score (que só mede confiança do SAM + heurísticas de
+# coesão, sem contato com ground truth). proxy_score vira fallback/desempate
+# para linhas sem GT, ou desempate entre linhas que empatam em iou_gain_mean.
+def row_rank_value(r):
+    gain = safe(r.get("iou_gain_mean"))
+    proxy = safe(r.get("proxy_score"))
+    proxy = proxy if proxy is not None else float("-inf")
+    if gain is not None:
+        return (1, gain, proxy)
+    return (0, proxy, proxy)
+
+def row_rank_basis(r):
+    return "gt_iou_gain" if safe(r.get("iou_gain_mean")) is not None else "proxy_score"
+
 # Melhor por classe
 best_by_cls = {}
 for r in rows:
     c = r["class_name"]
-    if c not in best_by_cls or float(r["proxy_score"]) > float(best_by_cls[c]["proxy_score"]):
+    if c not in best_by_cls or row_rank_value(r) > row_rank_value(best_by_cls[c]):
         best_by_cls[c] = r
 
 best_fields = [
     "class_name","step1_stem","step3_stem","prompt_mode","n_iter","sam_model",
     "N","sam_iou_mean","fg_coherence","fg_frac_mean","spatial_coh",
-    "gt_iou_mean","iou_gain_mean","n_improved","n_degraded","proxy_score","step4_npz",
+    "gt_iou_mean","iou_gain_mean","n_improved","n_degraded","proxy_score",
+    "rank_basis","step4_npz",
 ]
 with best_tsv.open("w", encoding="utf-8", newline="") as f:
     w = csv.DictWriter(f, delimiter="\t", fieldnames=best_fields)
     w.writeheader()
     for c in sorted(best_by_cls):
-        r = best_by_cls[c]
+        r = dict(best_by_cls[c])
+        r["rank_basis"] = row_rank_basis(r)
         w.writerow({k: r.get(k,"") for k in best_fields})
 
 # Agrega por (prompt_mode, n_iter, sam_model)
@@ -520,6 +563,7 @@ for (pm, ni, sm), gr in groups.items():
     classes = sorted({r["class_name"] for r in gr})
     def col(k): return [float(r[k]) for r in gr if safe(r.get(k)) is not None]
 
+    mean_gain = mean(col("iou_gain_mean"))
     agg_rows.append({
         "prompt_mode": pm, "n_iter": ni, "sam_model": sm,
         "classes_done": len(classes), "classes_total": total_cls,
@@ -530,21 +574,54 @@ for (pm, ni, sm), gr in groups.items():
         "mean_fg_coherence":mean(col("fg_coherence")),
         "mean_spatial_coh": mean(col("spatial_coh")),
         "mean_gt_iou":      mean(col("gt_iou_mean")),
-        "mean_iou_gain":    mean(col("iou_gain_mean")),
+        "std_gt_iou":       stdev(col("gt_iou_mean")),
+        "mean_iou_gain":    mean_gain,
+        # Desvio-padrão do ganho ENTRE CLASSES (não entre imagens) — mede se
+        # o ganho é consistente pelo dataset ou puxado por poucas classes.
+        "std_iou_gain":     stdev(col("iou_gain_mean")),
+        "mean_e4_iou_gt":   mean(col("e4_iou_mean_gt")),
+        "n_gt_classes":     len(col("iou_gain_mean")),
+        "rank_basis":       "gt_iou_gain" if not math.isnan(mean_gain) else "proxy_score",
     })
 
+# Baseline E3 (sem refinamento SAM): não depende de prompt_mode/n_iter/model,
+# então tira-se a média de e3_iou_mean_gt uma vez por classe (deduplicado),
+# não por linha (que repetiria o mesmo valor de E3 em cada config testada).
+baseline_e3_by_cls = defaultdict(list)
+for r in rows:
+    v = safe(r.get("e3_iou_mean_gt"))
+    if v is not None:
+        baseline_e3_by_cls[r["class_name"]].append(v)
+baseline_e3_values = [mean(vs) for vs in baseline_e3_by_cls.values()]
+baseline_e3_mean = mean(baseline_e3_values)
+baseline_e3_std  = stdev(baseline_e3_values)
+baseline_n_cls   = len(baseline_e3_values)
+
 min_cls = total_cls if min_cls_arg == "all" else int(min_cls_arg)
-agg_all = sorted(agg_rows, key=lambda r: (r["classes_done"], r["mean_proxy"]), reverse=True)
+
+# Mesmo critério do ranking por linha: ganho real de IoU (GT) tem prioridade
+# sobre proxy_score sempre que a config tiver cobertura de GT; proxy_score só
+# decide quando não há GT disponível para nenhuma classe daquela config.
+def group_rank_value(r):
+    gain = r["mean_iou_gain"]
+    proxy = r["mean_proxy"]
+    proxy = proxy if not math.isnan(proxy) else float("-inf")
+    if not math.isnan(gain):
+        return (1, gain, proxy)
+    return (0, proxy, proxy)
+
+agg_all = sorted(agg_rows, key=lambda r: (r["classes_done"], group_rank_value(r)), reverse=True)
 qualified = [r for r in agg_rows if int(r["classes_done"]) >= min_cls] or agg_rows
-qualified.sort(key=lambda r: float(r["mean_proxy"]), reverse=True)
+qualified.sort(key=group_rank_value, reverse=True)
 top10 = qualified[:10]
 
 agg_fields = [
     "prompt_mode","n_iter","sam_model",
-    "classes_done","classes_total","coverage",
+    "classes_done","classes_total","coverage","n_gt_classes",
     "mean_proxy","std_proxy",
     "mean_sam_iou","mean_fg_coherence","mean_spatial_coh",
-    "mean_gt_iou","mean_iou_gain",
+    "mean_gt_iou","std_gt_iou","mean_iou_gain","std_iou_gain",
+    "mean_e4_iou_gt","rank_basis",
 ]
 
 def fmt(v):
@@ -565,15 +642,35 @@ def s(r, k):
 
 with top10_md.open("w", encoding="utf-8") as f:
     f.write("# Top 10 agregado — configurações da Etapa 4 (SAM 2)\n\n")
-    f.write("> Ranking pela média de `proxy_score` entre classes.\n\n")
+    f.write("> Ranking por `mean_iou_gain` (ganho real de IoU E3->E4 contra GT) quando há "
+            "ground truth disponível; `mean_proxy` (confiança SAM + coesão) é usado apenas "
+            "como fallback para configs sem GT. Ver coluna `rank_basis`.\n\n")
     f.write(f"Classes avaliadas: **{total_cls}**. Mínimo para ranking: **{min_cls}**.\n\n")
-    f.write("| # | prompt_mode | n_iter | model | classes | cov | mean_proxy | mean_sam_iou | mean_fg_coh | mean_spatial | mean_gt_iou | mean_gain |\n")
-    f.write("|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+    if baseline_n_cls > 0:
+        f.write(
+            f"**Baseline (E3, sem refinamento SAM2)**: IoU médio contra GT = "
+            f"**{baseline_e3_mean:.4f}** (±{baseline_e3_std:.4f}, n={baseline_n_cls} classes "
+            f"com GT). Use esta linha como referência para o ganho absoluto (`mean_gain` "
+            f"abaixo é o delta E4−E3; IoU absoluto da E4 é `mean_e4_iou_gt`).\n\n"
+        )
+    else:
+        f.write(
+            "**Baseline (E3) indisponível** — nenhuma classe com GT pareado encontrada. "
+            "`mean_gain`/`mean_e4_iou_gt` abaixo não têm base de comparação; confira "
+            "`gt_index.json`.\n\n"
+        )
+    f.write("| # | prompt_mode | n_iter | model | classes (GT) | cov | rank_basis | "
+            "mean_proxy | mean_sam_iou | mean_fg_coh | mean_spatial | "
+            "mean_gt_iou±std | mean_e4_iou | mean_gain±std |\n")
+    f.write("|---:|---|---:|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|\n")
     for i, r in enumerate(top10, 1):
+        gt_iou_cell = f"{s(r,'mean_gt_iou')}±{s(r,'std_gt_iou')}" if not math.isnan(r.get("mean_gt_iou", math.nan)) else "n/a"
+        gain_cell   = f"{s(r,'mean_iou_gain')}±{s(r,'std_iou_gain')}" if not math.isnan(r.get("mean_iou_gain", math.nan)) else "n/a"
         f.write(f"| {i} | {r['prompt_mode']} | {r['n_iter']} | {r['sam_model']} "
-                f"| {r['classes_done']}/{r['classes_total']} | {r['coverage']:.1%} "
+                f"| {r['n_gt_classes']}/{r['classes_done']} | {r['coverage']:.1%} "
+                f"| {r['rank_basis']} "
                 f"| {s(r,'mean_proxy')} | {s(r,'mean_sam_iou')} | {s(r,'mean_fg_coherence')} "
-                f"| {s(r,'mean_spatial_coh')} | {s(r,'mean_gt_iou')} | {s(r,'mean_iou_gain')} |\n")
+                f"| {s(r,'mean_spatial_coh')} | {gt_iou_cell} | {s(r,'mean_e4_iou_gt')} | {gain_cell} |\n")
 
 print(f"[Aggregate] {agg_tsv}")
 print(f"[Top10] {top10_tsv} / {top10_md}")

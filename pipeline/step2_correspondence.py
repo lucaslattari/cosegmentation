@@ -316,7 +316,8 @@ def normalized_cut(W: np.ndarray, n_cuts: int = 1) -> np.ndarray:
     vals, vecs = np.linalg.eigh(L_sym)
 
     # Retorna os n_cuts+1 menores (índices 0..n_cuts)
-    # Índice 0 = autovetor constante (todos iguais) = trivial
+    # Índice 0 = autovetor trivial do Laplaciano normalizado (∝ D^{1/2}·1;
+    # constante apenas se o grafo for regular) — não usado
     # Índice 1 = Fiedler = partição binária
     return vecs[:, :n_cuts + 1].astype(np.float32)     # (P_total, n_cuts+1)
 

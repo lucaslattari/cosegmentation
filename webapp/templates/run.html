@@ -16,8 +16,8 @@
       {% if metadata.mode in ['step1', 'step2', 'step3', 'step4'] %}
         <div class="config-line">
           E1: {{ metadata.options.model }} · {{ metadata.options.img_size }} px · {{ metadata.options.resize }} · {{ metadata.options.feature_mode }}
-          {% if metadata.mode in ['step2', 'step3', 'step4'] %} · E2: top_k={{ metadata.options.top_k }}, temperature={{ metadata.options.temperature }}{% endif %}
-          {% if metadata.mode in ['step3', 'step4'] %} · E3: k={{ metadata.options.k_neighbors }}, spectral={{ metadata.options.n_spectral }}, clusters={{ metadata.options.n_clusters }}, threshold={{ metadata.options.fg_threshold }}, α={{ metadata.options.saliency_alpha }}{% endif %}
+          {% if metadata.mode in ['step2', 'step3', 'step4'] %} · E2: top_k={{ metadata.options.top_k }}, T={{ metadata.options.temperature }}, orientation={{ metadata.options.orientation }}, degree α={{ metadata.options.degree_alpha }}{% endif %}
+          {% if metadata.mode in ['step3', 'step4'] %} · E2B: {{ metadata.options.bg_suppression }}, λ={{ metadata.options.bg_lambda }}, γ={{ metadata.options.bg_gamma }} · E3: k={{ metadata.options.k_neighbors }}, spectral={{ metadata.options.n_spectral }}, clusters={{ metadata.options.n_clusters }}, saliency α={{ metadata.options.saliency_alpha }}, empty-FG={{ metadata.options.empty_fg_bypass }}@{{ metadata.options.empty_fg_top_fraction }}{% endif %}
           {% if metadata.mode == 'step4' %} · E4: {{ metadata.options.sam_model }}, {{ metadata.options.prompt_mode }}, iter={{ metadata.options.sam_n_iter }}{% endif %}
         </div>
       {% endif %}
@@ -121,15 +121,20 @@
   <script>
     const endpoint = {{ url_for('run_status', run_id=run_id)|tojson }};
     const mode = {{ metadata.mode|tojson }};
+    const auditHasE2B = {{ ((metadata.mode in ['step3', 'step4']) and metadata.options.get('bg_suppression', 'recurrence') != 'none')|tojson }};
     const stepNames = mode === 'step1'
       ? ['Extração DINOv2', 'Auditoria das features']
       : mode === 'step2'
         ? ['Extração DINOv2', 'Correspondências', 'Auditoria da Etapa 2']
         : mode === 'step3'
-          ? ['Extração DINOv2', 'Correspondências', 'Co-saliência espectral', 'Auditoria da Etapa 3']
+          ? (auditHasE2B
+              ? ['Extração DINOv2', 'Correspondências', 'Supressão de background (E2B)', 'Co-saliência espectral', 'Auditoria da Etapa 3']
+              : ['Extração DINOv2', 'Correspondências', 'Co-saliência espectral', 'Auditoria da Etapa 3'])
         : mode === 'step4'
-          ? ['Extração DINOv2', 'Correspondências', 'Co-saliência espectral', 'SAM 2', 'Auditoria da Etapa 4']
-        : {{ (['DINOv2', 'Correspondências', 'Co-saliência', 'SAM 2', 'Refinamento iterativo', 'Avaliação com GT'] if metadata.has_ground_truth else ['DINOv2', 'Correspondências', 'Co-saliência', 'SAM 2', 'Refinamento iterativo'])|tojson }};
+          ? (auditHasE2B
+              ? ['Extração DINOv2', 'Correspondências', 'Supressão de background (E2B)', 'Co-saliência espectral', 'SAM 2', 'Auditoria da Etapa 4']
+              : ['Extração DINOv2', 'Correspondências', 'Co-saliência espectral', 'SAM 2', 'Auditoria da Etapa 4'])
+        : {{ (['DINOv2', 'Correspondências', 'Supressão de background (E2B)', 'Co-saliência', 'SAM 2', 'Refinamento iterativo', 'Avaliação com GT'] if metadata.has_ground_truth else ['DINOv2', 'Correspondências', 'Supressão de background (E2B)', 'Co-saliência', 'SAM 2', 'Refinamento iterativo'])|tojson }};
     const plotLabels = {
       'cls_similarity_heatmap.png': 'Similaridade global entre imagens (CLS)',
       'local_similarity_heatmap.png': 'Similaridade local NN entre imagens',
@@ -372,6 +377,10 @@
       renderResultCards(document.querySelector('#results'), results);
     }
 
+    function resultsSignature(results) {
+      return (results || []).map(r => `${r.stage || ''}:${r.mask || ''}`).join('|');
+    }
+
     function renderEvaluation(evaluation) {
       if (!evaluation) return;
       document.querySelector('#evaluation-section').classList.remove('hidden');
@@ -392,7 +401,7 @@
     let pollTimer = null;
     let pollDelay = 2000;
     let renderedQuality = false;
-    let renderedResults = false;
+    let renderedResultsSignature = null;
     let renderedEvaluation = false;
 
     function updateElapsed() {
@@ -424,7 +433,7 @@
     let lastMainEvaluation = null;
     const correctionEndpoint = {{ (url_for('correction_status', run_id=run_id) if metadata.mode == 'pipeline' else None)|tojson }};
     let correctionPollTimer = null;
-    let correctionRenderedResults = false;
+    let correctionResultsSignature = null;
 
     function fmtDelta(before, after) {
       if (before == null || after == null) return '';
@@ -494,16 +503,18 @@
           document.querySelector('#correction-message').textContent = data.message || '';
         }
         if (data.report) renderCorrectionReport(data.report);
-        if (data.results?.length && !correctionRenderedResults) {
-          // A correção substitui os resultados originais na tela — evita
-          // empilhar dois painéis de imagem mostrando a mesma coleção em
-          // dois estados diferentes, e a avaliação final "sem correção"
-          // (a comparação antes/depois já vive dentro do card de correção).
-          document.querySelector('#results-section')?.classList.add('hidden');
-          document.querySelector('#evaluation-section')?.classList.add('hidden');
-          document.querySelector('#correction-results-section').classList.remove('hidden');
-          renderResultCards(document.querySelector('#correction-results'), data.results);
-          correctionRenderedResults = true;
+        if (data.results?.length) {
+          const signature = resultsSignature(data.results);
+          if (signature !== correctionResultsSignature) {
+            // A correção substitui os resultados originais na tela. Se E4 foi
+            // mostrada primeiro, a assinatura muda quando E5 começa a exportar
+            // e o painel é atualizado automaticamente para o resultado final.
+            document.querySelector('#results-section')?.classList.add('hidden');
+            document.querySelector('#evaluation-section')?.classList.add('hidden');
+            document.querySelector('#correction-results-section').classList.remove('hidden');
+            renderResultCards(document.querySelector('#correction-results'), data.results);
+            correctionResultsSignature = signature;
+          }
         }
         if (data.evaluation) renderCorrectionEvaluation(data.evaluation);
         if (data.state === 'running' || data.state === 'preparing') {
@@ -536,9 +547,15 @@
           renderQuality(data.quality);
           renderedQuality = true;
         }
-        if (data.results?.length && !renderedResults) {
-          renderResults(data.results);
-          renderedResults = true;
+        if (data.results?.length) {
+          const signature = resultsSignature(data.results);
+          if (signature !== renderedResultsSignature) {
+            // E4 pode aparecer como preview durante o pipeline. Quando E5
+            // passa a existir (ou termina de exportar mais máscaras), a
+            // assinatura muda e o painel é redesenhado com a saída mais nova.
+            renderResults(data.results);
+            renderedResultsSignature = signature;
+          }
         }
         if (data.evaluation && !renderedEvaluation) {
           renderEvaluation(data.evaluation);

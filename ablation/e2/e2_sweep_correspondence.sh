@@ -13,19 +13,32 @@ export LC_NUMERIC=C
 #
 # A entrada esperada é a pasta de saída do sweep da Etapa 1, especificamente
 # os arquivos em <step1_out>/npz/<classe>/*.npz.
-# Por padrão, processa as mesmas 16 classes selecionadas.
-# Um filtro de configuração (-c) pode restringir quais .npz da Etapa 1 usar.
+# Por padrão, processa as mesmas 14 classes selecionadas.
+# Um filtro de configuração (STEP1_CONFIG_FILTER) pode restringir quais .npz
+# da Etapa 1 usar.
 #
 # NOVO: quando GT_INDEX é fornecido, o analisador da Etapa 2 também testa
 # heurísticas alternativas de orientação FG/BG (size_based, spatial_based,
-# combined) contra a saliência CLS usada em produção. Os resultados entram
-# em metrics.tsv (colunas orientation_accuracy_*), no best_by_class.tsv, e
-# num relatório dedicado orientation_heuristics_summary.md que agrega, por
-# classe, qual heurística venceu e por quanto.
+# combined) contra a orientação usada em produção (--orientation spatial).
+# Os resultados entram em metrics.tsv (colunas orientation_accuracy_*), no
+# best_by_class.tsv, e num relatório dedicado orientation_heuristics_summary.md
+# que agrega, por classe, qual heurística venceu e por quanto.
+#
+# CORREÇÕES aplicadas nesta versão:
+#   1. step2_correspondence.py agora é chamado com --orientation spatial
+#      explicitamente (produção usa spatial; o default interno do script é
+#      cls, então sem essa flag o sweep testava a orientação errada).
+#   2. metrics.tsv grava step1_config (sem o prefixo "<Classe>__") em vez de
+#      step1_stem (que incluía o prefixo e impedia a agregação entre classes
+#      de funcionar corretamente).
+#   3. O cálculo de estabilidade LOO usa np.divide(..., where=...) em vez de
+#      np.where(cond, fw/ws, 0.5), evitando o RuntimeWarning de divisão por
+#      zero (o resultado numérico já estava correto antes; isso só elimina
+#      o aviso).
 #
 # Uso básico:
-#   chmod +x run_step2_correspondence_sweep.sh
-#   ./run_step2_correspondence_sweep.sh \
+#   chmod +x e2_sweep_correspondence.sh
+#   ./e2_sweep_correspondence.sh \
 #     -i ./features_sweep_selected/npz \
 #     -s ./step2_correspondence.py \
 #     -a ./analyze_step2_correspondence.py \
@@ -45,7 +58,7 @@ export LC_NUMERIC=C
 # =============================================================================
 
 # ----------------------------------------------------------------------------
-# 16 classes selecionadas — mesma lista do sweep da Etapa 1
+# 14 classes selecionadas — mesma lista do sweep da Etapa 1
 # ----------------------------------------------------------------------------
 SELECTED_CLASSES=(
     "Alaskan Brown Bear"
@@ -88,44 +101,44 @@ REUSE_ANALYZER_REPORTS="${REUSE_ANALYZER_REPORTS:-1}"
 usage() {
   cat <<USAGE
 Uso:
-  $0 -i <pasta_npz_etapa1> [opções]
+  $0 -i <pasta_npz_etapa1> [opcoes]
 
-Opções:
+Opcoes:
   -i  Pasta raiz dos .npz da Etapa 1. Default: ./features_sweep_selected/npz
       Esperado: <pasta>/<classe>/<stem>.npz
   -s  Script da etapa 2. Default: ./step2_correspondence.py
   -a  Script analisador. Default: ./analyze_step2_correspondence.py
-  -o  Pasta raiz de saída. Default: ./correspondence_sweep
+  -o  Pasta raiz de saida. Default: ./correspondence_sweep
   -g  Caminho para gt_index.json. Passado ao analisador como --gt_index.
-      Também pode ser definido via variável de ambiente GT_INDEX.
-      Com GT, o analisador também testa heurísticas alternativas de
-      orientação FG/BG (veja orientation_heuristics_summary.md na saída).
-  -n  Máximo de classes a processar (teste rápido). Ex.: -n 3
+      Tambem pode ser definido via variavel de ambiente GT_INDEX.
+      Com GT, o analisador tambem testa heuristicas alternativas de
+      orientacao FG/BG (veja orientation_heuristics_summary.md na saida).
+  -n  Maximo de classes a processar (teste rapido). Ex.: -n 3
   -k  Regex para filtrar classes. Ex.: -k 'Panda|Bear'
-  -f  Força reprocessamento mesmo se o .npz já existir
-  -v  Gera visualizações do step2 (--visualize)
+  -f  Forca reprocessamento mesmo se o .npz ja existir
+  -v  Gera visualizacoes do step2 (--visualize)
   -h  Ajuda
 
-Variáveis de ambiente úteis:
+Variaveis de ambiente uteis:
   PYTHON_BIN=python3
   TOP_K_STR="5 10 15"
   TEMPERATURE_STR="0.02 0.05 0.1"
   STEP1_CONFIG_FILTER="vits14__img-518__resize-keep_ar__layer-last__feat-l2"
   GT_INDEX=/caminho/gt_index.json
-  NO_PADDING_MASK=0   # 1 desativa a exclusão de padding nas métricas do analisador
+  NO_PADDING_MASK=0   # 1 desativa a exclusao de padding nas metricas do analisador
   RUN_ANALYZER=1
   RESUME=1
   VALIDATE_EXISTING=1
   REUSE_ANALYZER_REPORTS=1
-  MIN_CLASSES_FOR_AGGREGATE=all | número
+  MIN_CLASSES_FOR_AGGREGATE=all | numero
 
 Exemplos:
-  # Teste rápido: 2 classes, uma config E1, top_k=10, temperature=0.05, com GT
+  # Teste rapido: 2 classes, uma config E1, top_k=10, temperature=0.05, com GT
   STEP1_CONFIG_FILTER="vits14__img-518__resize-keep_ar__layer-last__feat-l2" \\
   TOP_K_STR="10" TEMPERATURE_STR="0.05" \\
   $0 -i ./features_sweep_selected/npz -g ./gt_index.json -n 2
 
-  # Sweep completo com GT (inclui teste de heurísticas de orientação)
+  # Sweep completo com GT (inclui teste de heuristicas de orientacao)
   STEP1_CONFIG_FILTER="vits14__img-518__resize-keep_ar__layer-last__feat-l2" \\
   TOP_K_STR="5 10 15" TEMPERATURE_STR="0.02 0.05 0.1" \\
   $0 -i ./features_sweep_selected/npz -g ./gt_index.json
@@ -144,18 +157,18 @@ while getopts ":i:s:a:o:g:n:k:fvh" opt; do
     f) FORCE=1 ;;
     v) VIZ=1 ;;
     h) usage; exit 0 ;;
-    :) echo "[ERRO] Opção -$OPTARG requer argumento." >&2; usage; exit 2 ;;
-    \?) echo "[ERRO] Opção inválida: -$OPTARG" >&2; usage; exit 2 ;;
+    :) echo "[ERRO] Opcao -$OPTARG requer argumento." >&2; usage; exit 2 ;;
+    \?) echo "[ERRO] Opcao invalida: -$OPTARG" >&2; usage; exit 2 ;;
   esac
 done
 
 if [[ ! -d "$STEP1_NPZ_ROOT" ]]; then
-  echo "[ERRO] Pasta de .npz da Etapa 1 não encontrada: $STEP1_NPZ_ROOT" >&2
+  echo "[ERRO] Pasta de .npz da Etapa 1 nao encontrada: $STEP1_NPZ_ROOT" >&2
   echo "       Rode run_step1_feature_sweep_selected_classes.sh primeiro." >&2
   exit 1
 fi
 if [[ ! -f "$STEP2_SCRIPT" ]]; then
-  echo "[ERRO] Script da etapa 2 não encontrado: $STEP2_SCRIPT" >&2
+  echo "[ERRO] Script da etapa 2 nao encontrado: $STEP2_SCRIPT" >&2
   exit 1
 fi
 
@@ -168,7 +181,7 @@ OUT_ROOT="$($PYTHON_BIN -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' 
 # Resolve GT_INDEX para path absoluto, se fornecido.
 if [[ -n "$GT_INDEX" ]]; then
   if [[ ! -f "$GT_INDEX" ]]; then
-    echo "[ERRO] gt_index.json não encontrado: $GT_INDEX" >&2
+    echo "[ERRO] gt_index.json nao encontrado: $GT_INDEX" >&2
     exit 1
   fi
   GT_INDEX="$($PYTHON_BIN -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$GT_INDEX")"
@@ -191,7 +204,7 @@ if [[ -n "$MAX_CLASSES" ]]; then
   CLASSES=("${CLASSES[@]:0:$MAX_CLASSES}")
 fi
 if [[ "${#CLASSES[@]}" -eq 0 ]]; then
-  echo "[ERRO] Nenhuma classe restou após os filtros." >&2; exit 1
+  echo "[ERRO] Nenhuma classe restou apos os filtros." >&2; exit 1
 fi
 
 # ----------------------------------------------------------------------------
@@ -201,7 +214,7 @@ read -r -a TOP_KS      <<< "${TOP_K_STR:-5 10 15}"
 read -r -a TEMPERATURES <<< "${TEMPERATURE_STR:-0.02 0.05 0.10}"
 
 # ----------------------------------------------------------------------------
-# Utilitários
+# Utilitarios
 # ----------------------------------------------------------------------------
 sanitize() {
   local s="$1"
@@ -243,7 +256,7 @@ write_done_marker() {
 }
 
 # ----------------------------------------------------------------------------
-# Estrutura de saída
+# Estrutura de saida
 # ----------------------------------------------------------------------------
 NPZ_ROOT="$OUT_ROOT/npz"
 REPORT_ROOT="$OUT_ROOT/reports"
@@ -265,19 +278,19 @@ printf "run_index\ttotal_runs\tclass_name\tstep1_stem\ttop_k\ttemperature\tstatu
 # ----------------------------------------------------------------------------
 # Descobre quais .npz da E1 existem para cada classe
 # ----------------------------------------------------------------------------
-declare -A CLASS_NPZ_MAP   # classe → lista de paths separados por "|"
+declare -A CLASS_NPZ_MAP   # classe -> lista de paths separados por "|"
 
 for cls in "${CLASSES[@]}"; do
   safe_cls="$(sanitize "$cls")"
   cls_npz_dir="$STEP1_NPZ_ROOT/$safe_cls"
   if [[ ! -d "$cls_npz_dir" ]]; then
-    echo "[Aviso] Pasta E1 não encontrada para '$cls': $cls_npz_dir" >&2
+    echo "[Aviso] Pasta E1 nao encontrada para '$cls': $cls_npz_dir" >&2
     continue
   fi
 
   found_npzs=()
   while IFS= read -r -d '' npz_file; do
-    # Aplica filtro de configuração se definido
+    # Aplica filtro de configuracao se definido
     if [[ -n "$STEP1_CONFIG_FILTER" ]]; then
       if ! echo "$(basename "$npz_file")" | grep -q "$STEP1_CONFIG_FILTER"; then
         continue
@@ -295,7 +308,7 @@ for cls in "${CLASSES[@]}"; do
   CLASS_NPZ_MAP["$cls"]="$(printf '%s|' "${found_npzs[@]}")"
 done
 
-# Contagem total de execuções
+# Contagem total de execucoes
 TOTAL_RUNS=0
 for cls in "${CLASSES[@]}"; do
   [[ -z "${CLASS_NPZ_MAP[$cls]+x}" ]] && continue
@@ -313,35 +326,35 @@ SWEEP_START_HUMAN=$(now_human)
 
 cat <<INFO
 ============================================================
-Sweep Etapa 2 — correspondência cross-image
+Sweep Etapa 2 - correspondencia cross-image
 Pasta .npz Etapa 1     : $STEP1_NPZ_ROOT
 Filtro config E1       : ${STEP1_CONFIG_FILTER:-nenhum}
-Ground truth (GT)      : ${GT_INDEX:-não fornecido}
+Ground truth (GT)      : ${GT_INDEX:-nao fornecido}
 Script etapa 2         : $STEP2_SCRIPT
 Analyzer               : $ANALYZER_SCRIPT
-Saída                  : $OUT_ROOT
+Saida                  : $OUT_ROOT
 Classes a processar    : $TOTAL_CLASSES
-Total execuções        : $TOTAL_RUNS
+Total execucoes        : $TOTAL_RUNS
 Top-K valores          : ${TOP_KS[*]}
 Temperature valores    : ${TEMPERATURES[*]}
-Início                 : $SWEEP_START_HUMAN
+Inicio                 : $SWEEP_START_HUMAN
 Resume habilitado      : $RESUME
 INFO
 
 # ----------------------------------------------------------------------------
-# Extração de métricas do .npz + relatório do analisador
+# Extracao de metricas do .npz + relatorio do analisador
 # ----------------------------------------------------------------------------
 compute_step2_metrics() {
   local class_name="$1"
   local step1_npz="$2"
-  local step1_stem="$3"
+  local step1_config="$3"
   local top_k="$4"
   local temperature="$5"
   local step2_npz="$6"
   local analyzer_report="$7"
 
   "$PYTHON_BIN" - \
-    "$class_name" "$step1_npz" "$step1_stem" "$top_k" "$temperature" \
+    "$class_name" "$step1_npz" "$step1_config" "$top_k" "$temperature" \
     "$step2_npz" "$analyzer_report" <<'PY'
 import sys, json, math
 from pathlib import Path
@@ -372,7 +385,7 @@ try:
     N, P = fg.shape
     K    = len(tp)
 
-    # Polarização
+    # Polarizacao
     dev = np.abs(fg.flatten() - 0.5)
     polar_decided = float(np.mean(dev > 0.2))
     mean_abs_dev  = float(np.mean(dev))
@@ -393,7 +406,7 @@ try:
     fg_frac_mean = float(np.mean(frac))
     fg_frac_std  = float(np.std(frac))
 
-    # Concordância entre pares
+    # Concordancia entre pares
     img_corrs = []
     for i in range(N):
         vecs = []
@@ -423,13 +436,14 @@ try:
                 w = max(sim, 0.0)
                 fw[pi] += pv[k,pi]*w; fw[pj] += pv[k,pj]*w
                 ws[pi] += w;          ws[pj] += w
-            fl = np.where(ws>0, fw/ws, 0.5)
+            fl = np.full_like(fw, 0.5)
+            np.divide(fw, ws, out=fl, where=ws>0)
             maes.append(float(np.mean(np.abs(fl - fg))))
         stab_mae = float(np.mean(maes))
     else:
         stab_mae = float("nan")
 
-    # Correlação CLS
+    # Correlacao CLS
     corrs = []
     for i in range(N):
         sf, ss = float(np.std(fg[i])), float(np.std(sal[i]))
@@ -438,21 +452,21 @@ try:
     cls_corr_mean = float(np.mean(corrs)) if corrs else float("nan")
     n_neg_corr    = int(sum(1 for c in corrs if c < -0.1))
 
-    # Proxy score (sem GT): combina sinais não supervisionados
-    # Penaliza instabilidade e baixa polarização; premia concordância e correlação CLS
-    s_polar = polar_decided                  # [0,1] alto é bom
+    # Proxy score (sem GT): combina sinais nao supervisionados
+    # Penaliza instabilidade e baixa polarizacao; premia concordancia e correlacao CLS
+    s_polar = polar_decided                  # [0,1] alto e bom
     s_agree = max(0.0, min(1.0, pair_agree)) if not math.isnan(pair_agree) else 0.0
     s_stab  = max(0.0, 1.0 - stab_mae / 0.2) if not math.isnan(stab_mae) else 0.5
     s_corr  = max(0.0, min(1.0, (cls_corr_mean + 1) / 2)) if not math.isnan(cls_corr_mean) else 0.5
     proxy = 0.35 * s_polar + 0.30 * s_agree + 0.20 * s_stab + 0.15 * s_corr
 
-    # Tenta ler métricas do relatório do analisador
+    # Tenta ler metricas do relatorio do analisador
     gt_best_iou = "nan"; gt_auc = "nan"; orient_acc = "nan"
     orient_size = "nan"; orient_spatial = "nan"; orient_combined = "nan"
     orient_best = "n/a"; orient_improve = "nan"
     stem = Path(analyzer_report).stem.replace(".analysis", "")
     json_path = Path(analyzer_report).parent / f"{stem}__quality" / "step2_quality.json"
-    # Compatibilidade com execuções antigas que usavam o diretório compartilhado
+    # Compatibilidade com execucoes antigas que usavam o diretorio compartilhado
     for candidate in [json_path,
         Path(analyzer_report).parent.parent / "step2_quality" / "step2_quality.json",
         Path(analyzer_report).parent / "step2_quality" / "step2_quality.json",
@@ -511,7 +525,7 @@ run_analyzer() {
     echo "[Analyzer] Desativado." > "$report_file"; return 0
   fi
   if [[ ! -f "$ANALYZER_SCRIPT" ]]; then
-    echo "[Analyzer] Script não encontrado: $ANALYZER_SCRIPT" > "$report_file"; return 0
+    echo "[Analyzer] Script nao encontrado: $ANALYZER_SCRIPT" > "$report_file"; return 0
   fi
 
   local stem
@@ -519,18 +533,15 @@ run_analyzer() {
   local out_dir
   out_dir="$(dirname "$report_file")/${stem}__quality"
 
-  # Monta argumentos do analisador, injetando --gt_index se disponível.
-  # Com GT, o analisador também roda o teste de heurísticas alternativas de
-  # orientação (comportamento padrão, sem flag extra necessária).
+  # Monta argumentos do analisador, injetando --gt_index se disponivel.
+  # Com GT, o analisador tambem roda o teste de heuristicas alternativas de
+  # orientacao (comportamento padrao, sem flag extra necessaria).
   #
-  # --features é ESSENCIAL aqui, não opcional: sem ele o analisador não
+  # --features e ESSENCIAL aqui, nao opcional: sem ele o analisador nao
   # tem como ler resize_info da Etapa 1, e sem resize_info tanto o GT
-  # quanto todas as métricas com padding (polarização, concordância,
-  # estabilidade, correlação com CLS, AUC, e principalmente
-  # orientation_accuracy) ficam desalinhados ou inflados por padding —
-  # ver docstrings de analyze_step2_correspondence.py. Isso NÃO era
-  # passado antes, o que quebrava silenciosamente o alinhamento do GT
-  # sempre que a Etapa 1 rodou com --resize keep_ar (o default).
+  # quanto todas as metricas com padding (polarizacao, concordancia,
+  # estabilidade, correlacao com CLS, AUC, e principalmente
+  # orientation_accuracy) ficam desalinhados ou inflados por padding.
   local analyzer_args=(--correspondence "$corr_npz" --output "$out_dir")
   if [[ -n "$step1_npz" ]]; then
     analyzer_args+=(--features "$step1_npz")
@@ -542,17 +553,11 @@ run_analyzer() {
     analyzer_args+=(--no_padding_mask)
   fi
 
-  # IMPORTANTE (resiliência a queda de energia / interrupção): report_file
-  # é o que REUSE_ANALYZER_REPORTS usa para decidir se esta config já foi
-  # analisada. Se escrevêssemos diretamente nele durante a execução do
-  # Python, uma interrupção no meio da análise deixaria um arquivo
-  # não-vazio em disco — no próximo resume, o REUSE_ANALYZER_REPORTS
-  # interpretaria isso como "já analisado" e pularia a config
-  # silenciosamente, mesmo com o relatório de qualidade incompleto ou
-  # ausente. Por isso todo o conteúdo é escrito num arquivo temporário e
-  # só promovido (mv atômico) para report_file depois que o processo
-  # Python termina — com sucesso ou com falha registrada, nunca no meio
-  # do caminho.
+  # IMPORTANTE (resiliencia a queda de energia / interrupcao): report_file
+  # e o que REUSE_ANALYZER_REPORTS usa para decidir se esta config ja foi
+  # analisada. Todo o conteudo e escrito num arquivo temporario e so
+  # promovido (mv atomico) para report_file depois que o processo Python
+  # termina - com sucesso ou com falha registrada, nunca no meio do caminho.
   local tmp_report="${report_file}.tmp.$$"
   echo "[Analyzer] $PYTHON_BIN $ANALYZER_SCRIPT ${analyzer_args[*]}" > "$tmp_report"
   set +e
@@ -569,7 +574,7 @@ run_analyzer() {
 }
 
 # ----------------------------------------------------------------------------
-# Agregação
+# Agregacao
 # ----------------------------------------------------------------------------
 make_aggregate() {
   local total_classes="$1" min_classes="$2"
@@ -621,6 +626,10 @@ with best_tsv.open("w", encoding="utf-8", newline="") as f:
         w.writerow({k: r.get(k,"") for k in best_fields})
 
 # Agrega por (step1_stem, top_k, temperature)
+# NOTA: apos a correcao, o campo "step1_stem" gravado no TSV ja vem SEM o
+# prefixo de classe (foi renomeado para step1_config na chamada que grava
+# a linha), entao o agrupamento abaixo agora funciona corretamente entre
+# classes diferentes.
 groups = defaultdict(list)
 for r in rows:
     key = (r["step1_stem"], r["top_k"], r["temperature"])
@@ -695,9 +704,9 @@ for path, data in [(agg_tsv, agg_all), (top10_tsv, top10)]:
             w.writerow({k: fmt(r.get(k,"")) for k in agg_fields})
 
 with top10_md.open("w", encoding="utf-8") as f:
-    f.write("# Top 10 agregado — configurações da Etapa 2\n\n")
-    f.write("> Ranking pela média de `proxy_score` entre classes.\n\n")
-    f.write(f"Classes avaliadas: **{total_cls}**. Mínimo para ranking: **{min_cls}**.\n\n")
+    f.write("# Top 10 agregado - configuracoes da Etapa 2\n\n")
+    f.write("> Ranking pela media de `proxy_score` entre classes.\n\n")
+    f.write(f"Classes avaliadas: **{total_cls}**. Minimo para ranking: **{min_cls}**.\n\n")
     f.write("| # | step1_config | top_k | temp | classes | cov | mean_proxy | mean_polar | mean_agree | mean_stab_mae | mean_cls_corr | mean_gt_iou | mean_auc | mean_orient | mean_orient_ganho | classes_c_alt_venceu |\n")
     f.write("|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
     for i, r in enumerate(top10, 1):
@@ -713,22 +722,22 @@ with top10_md.open("w", encoding="utf-8") as f:
         )
 
 # ----------------------------------------------------------------------------
-# Resumo dedicado das heurísticas de orientação, por classe
-# (usa a config de melhor proxy_score de cada classe — mesma escolha do
+# Resumo dedicado das heuristicas de orientacao, por classe
+# (usa a config de melhor proxy_score de cada classe - mesma escolha do
 # best_by_class.tsv)
 # ----------------------------------------------------------------------------
 rows_for_orient = [best_by_cls[c] for c in sorted(best_by_cls)]
 
 with orient_summary_md.open("w", encoding="utf-8") as f:
-    f.write("# Resumo — heurísticas de orientação FG/BG por classe\n\n")
+    f.write("# Resumo - heuristicas de orientacao FG/BG por classe\n\n")
     f.write(
-        "> Baseado na configuração de melhor `proxy_score` de cada classe. "
-        "Compara a heurística de produção (saliência CLS, usada em "
+        "> Baseado na configuracao de melhor `proxy_score` de cada classe. "
+        "Compara a heuristica de producao (orientacao spatial, usada em "
         "`orient_partition()` no `step2_correspondence.py`) com as alternativas "
         "testadas por `analyze_step2_correspondence.py` "
         "(`size_based`, `spatial_based`, `combined`).\n\n"
     )
-    f.write("| Classe | Baseline (CLS) | Melhor heurística | Acc. melhor | Ganho |\n")
+    f.write("| Classe | Baseline | Melhor heuristica | Acc. melhor | Ganho |\n")
     f.write("|---|---:|---|---:|---:|\n")
 
     n_alt_wins_total = 0
@@ -754,22 +763,22 @@ with orient_summary_md.open("w", encoding="utf-8") as f:
     total_classes_summarized = len(rows_for_orient)
     mean_imp = (sum(improvements) / len(improvements)) if improvements else float("nan")
     f.write(
-        f"**Classes onde alguma heurística alternativa venceu a produção "
+        f"**Classes onde alguma heuristica alternativa venceu a producao "
         f"(ganho > 0):** {n_alt_wins_total} / {total_classes_summarized}\n\n"
     )
-    f.write(f"**Ganho médio (melhor − produção) entre todas as classes:** {mean_imp:.4f}\n\n")
+    f.write(f"**Ganho medio (melhor - producao) entre todas as classes:** {mean_imp:.4f}\n\n")
     f.write(
-        "Uso sugerido: se `n_alt_wins_total` for uma fração relevante das classes "
-        "(ex: > 30%) e o ganho médio for consistentemente positivo, considere trocar "
-        "`orient_partition()` no `step2_correspondence.py` pela heurística mais "
-        "frequentemente vencedora (ou pela combinação), em vez de manter só saliência CLS.\n"
+        "Uso sugerido: se `n_alt_wins_total` for uma fracao relevante das classes "
+        "(ex: > 30%) e o ganho medio for consistentemente positivo, considere trocar "
+        "`orient_partition()` no `step2_correspondence.py` pela heuristica mais "
+        "frequentemente vencedora (ou pela combinacao), em vez de manter so a atual.\n"
     )
 
 print(f"[Aggregate] {agg_tsv}")
 print(f"[Top10] {top10_tsv}")
 print(f"[Top10 MD] {top10_md}")
 print(f"[Best by class] {best_tsv}")
-print(f"[Orientação — resumo] {orient_summary_md}")
+print(f"[Orientacao - resumo] {orient_summary_md}")
 PY
 }
 
@@ -789,6 +798,7 @@ for cls in "${CLASSES[@]}"; do
   for step1_npz in "${step1_npzs[@]}"; do
     [[ -z "$step1_npz" ]] && continue
     step1_stem="$(basename "$step1_npz" .npz)"
+    step1_config="${step1_stem#${safe_cls}__}"
 
     cls_npz_dir="$NPZ_ROOT/$safe_cls"
     cls_report_dir="$REPORT_ROOT/$safe_cls"
@@ -818,17 +828,17 @@ for cls in "${CLASSES[@]}"; do
           if npz_is_valid "$FLAT_NPZ"; then
             EXISTING_VALID=1
           else
-            echo "[Aviso] .npz inválido. Removendo: $FLAT_NPZ" >&2
+            echo "[Aviso] .npz invalido. Removendo: $FLAT_NPZ" >&2
             rm -f "$FLAT_NPZ" "$DONE_MARKER"
           fi
         fi
 
         if [[ "$EXISTING_VALID" -eq 1 ]]; then
           if [[ -f "$DONE_MARKER" ]]; then
-            echo "[Resume] Concluído anteriormente. Pulando: $FLAT_NPZ"
+            echo "[Resume] Concluido anteriormente. Pulando: $FLAT_NPZ"
             RUN_STATUS="resumed_done"
           else
-            echo "[Resume] .npz válido, sem marcador. Reaproveitando: $FLAT_NPZ"
+            echo "[Resume] .npz valido, sem marcador. Reaproveitando: $FLAT_NPZ"
             RUN_STATUS="resumed_npz"
           fi
         else
@@ -838,7 +848,9 @@ for cls in "${CLASSES[@]}"; do
             --features "$step1_npz"
             --output   "$(dirname "$FLAT_NPZ")/tmp_${STEM}"
             --top_k    "$top_k"
-            --temperature "$temperature")
+            --temperature "$temperature"
+            --orientation "spatial"
+            --degree_alpha "0.10")
 
           if [[ "$VIZ" -eq 1 ]]; then
             cmd+=(--visualize --viz_max "$VIZ_MAX")
@@ -856,7 +868,7 @@ for cls in "${CLASSES[@]}"; do
           else
             TMP_NPZ="$(dirname "$FLAT_NPZ")/tmp_${STEM}/correspondence.npz"
             if [[ ! -f "$TMP_NPZ" ]]; then
-              echo "[ERRO] correspondence.npz não encontrado em $(dirname "$FLAT_NPZ")/tmp_${STEM}" >&2
+              echo "[ERRO] correspondence.npz nao encontrado em $(dirname "$FLAT_NPZ")/tmp_${STEM}" >&2
               RUN_STATUS="failed_missing_npz"
             else
               cp "$TMP_NPZ" "$FLAT_NPZ"
@@ -883,7 +895,7 @@ for cls in "${CLASSES[@]}"; do
 
         run_analyzer "$FLAT_NPZ" "$ANALYZER_REPORT" "$step1_npz"
         compute_step2_metrics \
-          "$cls" "$step1_npz" "$step1_stem" "$top_k" "$temperature" \
+          "$cls" "$step1_npz" "$step1_config" "$top_k" "$temperature" \
           "$FLAT_NPZ" "$ANALYZER_REPORT" >> "$METRICS_TSV"
         write_done_marker "$DONE_MARKER" "$FLAT_NPZ" "$RUN_STATUS"
 
@@ -915,16 +927,16 @@ make_aggregate "$TOTAL_CLASSES" "$MIN_CLASSES_FOR_AGGREGATE"
 cat <<DONE
 
 ============================================================
-Concluído.
+Concluido.
 .npz Etapa 2                 : $NPZ_ROOT
-Relatórios analisador        : $REPORT_ROOT
+Relatorios analisador        : $REPORT_ROOT
 Logs                         : $LOG_ROOT
-Métricas completas           : $METRICS_TSV
+Metricas completas           : $METRICS_TSV
 Agregado por config          : $AGG_TSV
 Top 10 agregado TSV          : $TOP10_AGG_TSV
 Top 10 agregado Markdown     : $TOP10_AGG_MD
 Melhor config por classe     : $BEST_BY_CLASS_TSV
-Resumo heurísticas orientação: $ORIENT_SUMMARY_MD
+Resumo heuristicas orientacao: $ORIENT_SUMMARY_MD
 Tempos                       : $TIMING_TSV
 ============================================================
 DONE

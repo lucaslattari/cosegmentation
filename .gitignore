@@ -66,10 +66,28 @@ old experiments/
 # redundante e pode ser removida.
 diagnostics/
 
-# --- App em revisão (NÃO ignorado — ver observação abaixo) ---------------
-# webapp/ e study/ ficam DE FORA deste .gitignore de propósito: são código
-# real (Flask app, notebooks didáticos), não artefato regenerável.
-# Se depois decidir por outro caminho, adicione aqui.
+# --- Outros ---------------
+/webapp/
+/study/
+/paper/
+/presentations/
+/features_sweep_selected/
+/geometric_priors_staging/
+/airshows_report/
+/cosaliency_dedup_probe/
+/pascal_seg_report/
+/pottedplant_report/
+/ablation/
+/paper/arxiv/
+
+/correspondence_sweep/
+/sam_sweep_full/
+
+*.npz
+*.npy
+
+pastas.txt
+color_contrast_results.json
 
 # --- LaTeX / paper (ajustar depois de ver o conteúdo real de paper/) ------
 *.aux
@@ -84,8 +102,3 @@ diagnostics/
 # --- Confirmado: gerado automaticamente pelo pipeline ----------------------
 # gt_index.json (raiz): gerado por setup_gt_index() em run_pipeline.sh.
 gt_index.json
-
-# --- TODO — ainda pendente --------------------------------------------------
-# paper/: depende do que tem lá dentro (fonte LaTeX vs. build artifacts).
-# As regras de *.aux/*.bbl/etc. acima cobrem build do LaTeX, mas revise
-# quando você organizar essa pasta.

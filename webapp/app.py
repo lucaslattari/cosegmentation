@@ -12,6 +12,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from werkzeug.utils import secure_filename
 
 from pipeline_runner import (
+    production_options,
     run_pipeline,
     run_step1_analysis,
     run_step2_analysis,
@@ -40,6 +41,9 @@ SAM_MODELS = {
     "facebook/sam2-hiera-large",
 }
 SAM_PROMPT_MODES = {"box_only", "box_points", "box_points_mask"}
+E2_ORIENTATIONS = {"cls", "spatial"}
+E2_BG_SUPPRESSION_MODES = {"none", "recurrence"}
+E3_EMPTY_FG_BYPASS_MODES = {"none", "e2_topk"}
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
@@ -76,6 +80,7 @@ def parse_step1_options() -> tuple[dict, str | None]:
         return {}, "Tamanho de imagem inválido."
 
     options = {
+        "protocol": "semantic",
         "model": request.form.get("model", "dinov2_vits14"),
         "img_size": img_size,
         "resize": request.form.get("resize", "keep_ar"),
@@ -92,47 +97,68 @@ def parse_step1_options() -> tuple[dict, str | None]:
 
 def parse_step2_options() -> tuple[dict, str | None]:
     try:
-        top_k = int(request.form.get("top_k", "10"))
+        top_k = int(request.form.get("top_k", "250"))
         temperature = float(request.form.get("temperature", "0.05"))
+        degree_alpha = float(request.form.get("degree_alpha", "0.10"))
     except ValueError:
         return {}, "Os parâmetros da Etapa 2 precisam ser numéricos."
-    if not 1 <= top_k <= 500:
-        return {}, "top_k deve estar entre 1 e 500."
-    if not 0.001 <= temperature <= 1.0:
-        return {}, "temperature deve estar entre 0.001 e 1.0."
-    return {"top_k": top_k, "temperature": temperature}, None
+
+    orientation = request.form.get("orientation", "spatial")
+    checks = [
+        (1 <= top_k <= 500, "top_k deve estar entre 1 e 500."),
+        (0.001 <= temperature <= 1.0, "temperature deve estar entre 0.001 e 1.0."),
+        (0.0 <= degree_alpha <= 1.0, "degree_alpha deve estar entre 0 e 1."),
+        (orientation in E2_ORIENTATIONS, "Heurística de orientação da Etapa 2 inválida."),
+    ]
+    return {
+        "top_k": top_k,
+        "temperature": temperature,
+        "orientation": orientation,
+        "degree_alpha": degree_alpha,
+    }, next((message for valid, message in checks if not valid), None)
 
 
 def parse_step3_options() -> tuple[dict, str | None]:
     try:
-        k_neighbors = int(request.form.get("k_neighbors", "10"))
+        k_neighbors = int(request.form.get("k_neighbors", "15"))
         n_spectral = int(request.form.get("n_spectral", "8"))
-        n_clusters = int(request.form.get("n_clusters", "5"))
-        fg_threshold = float(request.form.get("fg_threshold", "0.5"))
+        n_clusters = int(request.form.get("n_clusters", "8"))
         saliency_alpha = float(request.form.get("saliency_alpha", "0.5"))
+        bg_lambda = float(request.form.get("bg_lambda", "0.50"))
+        bg_gamma = float(request.form.get("bg_gamma", "0.00"))
+        empty_fg_top_fraction = float(request.form.get("empty_fg_top_fraction", "0.20"))
     except ValueError:
-        return {}, "Os parâmetros da Etapa 3 precisam ser numéricos."
+        return {}, "Os parâmetros das Etapas 2B/3 precisam ser numéricos."
+
+    bg_suppression = request.form.get("bg_suppression", "recurrence")
+    empty_fg_bypass = request.form.get("empty_fg_bypass", "e2_topk")
     checks = [
         (1 <= k_neighbors <= 100, "k_neighbors deve estar entre 1 e 100."),
         (2 <= n_spectral <= 64, "n_spectral deve estar entre 2 e 64."),
         (2 <= n_clusters <= 32, "n_clusters deve estar entre 2 e 32."),
-        (0.0 <= fg_threshold <= 1.0, "fg_threshold deve estar entre 0 e 1."),
         (0.0 <= saliency_alpha <= 1.0, "saliency_alpha deve estar entre 0 e 1."),
+        (bg_suppression in E2_BG_SUPPRESSION_MODES, "Modo de supressão E2B inválido."),
+        (bg_lambda >= 0.0, "lambda da E2B deve ser não negativo."),
+        (0.0 <= bg_gamma <= 1.0, "gamma da E2B deve estar entre 0 e 1."),
+        (empty_fg_bypass in E3_EMPTY_FG_BYPASS_MODES, "Modo de fallback empty-FG inválido."),
+        (0.0 < empty_fg_top_fraction <= 1.0, "A fração do fallback empty-FG deve estar em (0, 1]."),
     ]
     error = next((message for valid, message in checks if not valid), None)
     return {
         "k_neighbors": k_neighbors,
         "n_spectral": n_spectral,
         "n_clusters": n_clusters,
-        "fg_threshold": fg_threshold,
         "saliency_alpha": saliency_alpha,
-        "refine": request.form.get("refine") == "on",
-        "adaptive_clusters": request.form.get("adaptive_clusters") == "on",
+        "bg_suppression": bg_suppression,
+        "bg_lambda": bg_lambda,
+        "bg_gamma": bg_gamma,
+        "empty_fg_bypass": empty_fg_bypass,
+        "empty_fg_top_fraction": empty_fg_top_fraction,
     }, error
 
 
 def parse_step4_options() -> tuple[dict, str | None]:
-    model = request.form.get("sam_model", "facebook/sam2.1-hiera-small")
+    model = request.form.get("sam_model", "facebook/sam2.1-hiera-large")
     prompt_mode = request.form.get("prompt_mode", "box_points_mask")
     try:
         n_iter = int(request.form.get("sam_n_iter", "2"))
@@ -215,7 +241,7 @@ def create_run():
     if len(valid_files) < 2:
         return render_template("index.html", error="Envie pelo menos duas imagens válidas."), 400
 
-    options: dict = {}
+    options: dict = production_options() if mode == "pipeline" else {}
     if mode in {"step1", "step2", "step3", "step4"}:
         options, error = parse_step1_options()
         if error:
@@ -302,6 +328,9 @@ def create_run():
         "run_id": run_id,
         "mode": mode,
         "collection": request.form.get("collection", "Minha coleção").strip() or "Minha coleção",
+        "collection_source": "uploaded_folder",
+        "e1_protocol": str(options.get("protocol", "semantic")),
+        "configuration_source": "production_preset" if mode == "pipeline" else "audit_form",
         "n_images": len(valid_files),
         "has_ground_truth": bool(valid_masks),
         "n_ground_truths": len(valid_masks),
@@ -411,17 +440,32 @@ def create_correction(run_id: str):
     return redirect(url_for("show_run", run_id=run_id) + "#correction")
 
 
+def _preferred_segmented_dir(base_dir: Path) -> Path | None:
+    """Prefere E5, mas só quando ela já contém máscaras exportadas.
+
+    Durante a execução, ``segmented_e5`` pode ser criada antes de todos os
+    arquivos finais existirem. Testar apenas ``is_dir()`` faria a API trocar
+    cedo demais para uma pasta ainda vazia. Enquanto isso, E4 continua sendo
+    um preview válido; assim que a primeira máscara E5 aparece, ela passa a
+    ter prioridade.
+    """
+    for dirname in ("segmented_e5", "segmented_e4"):
+        candidate = base_dir / dirname
+        if candidate.is_dir() and any(candidate.glob("*_mask.png")):
+            return candidate
+    return None
+
+
 def correction_results(path: Path, run_id: str) -> list[dict]:
-    result_dir = path / "output" / "correction" / "segmented_e5"
-    if not result_dir.is_dir():
-        result_dir = path / "output" / "correction" / "segmented_e4"
+    result_dir = _preferred_segmented_dir(path / "output" / "correction")
     results = []
-    if result_dir.is_dir():
+    if result_dir is not None:
         for mask in sorted(result_dir.glob("*_mask.png")):
             stem = mask.name.removesuffix("_mask.png")
             original = next((p for p in (path / "input").iterdir() if p.stem == stem), None)
             results.append({
                 "name": stem,
+                "stage": result_dir.name,
                 "original": url_for("run_file", run_id=run_id, filename=f"input/{original.name}") if original else None,
                 "mask": url_for("run_file", run_id=run_id, filename=f"output/correction/{result_dir.name}/{mask.name}"),
                 "overlay": url_for("run_file", run_id=run_id, filename=f"output/correction/{result_dir.name}/{stem}_overlay.jpg"),
@@ -520,16 +564,15 @@ def output_image_groups(path: Path, run_id: str) -> list[dict]:
     ]
 
 def pipeline_results(path: Path, run_id: str) -> list[dict]:
-    result_dir = path / "output" / "segmented_e5"
-    if not result_dir.is_dir():
-        result_dir = path / "output" / "segmented_e4"
+    result_dir = _preferred_segmented_dir(path / "output")
     results = []
-    if result_dir.is_dir():
+    if result_dir is not None:
         for mask in sorted(result_dir.glob("*_mask.png")):
             stem = mask.name.removesuffix("_mask.png")
             original = next((p for p in (path / "input").iterdir() if p.stem == stem), None)
             results.append({
                 "name": stem,
+                "stage": result_dir.name,
                 "original": url_for("run_file", run_id=run_id, filename=f"input/{original.name}") if original else None,
                 "mask": url_for("run_file", run_id=run_id, filename=f"output/{result_dir.name}/{mask.name}"),
                 "overlay": url_for("run_file", run_id=run_id, filename=f"output/{result_dir.name}/{stem}_overlay.jpg"),

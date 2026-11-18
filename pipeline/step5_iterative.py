@@ -84,7 +84,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from PIL import Image
 from scipy.ndimage import binary_erosion, binary_dilation
-from sklearn.preprocessing import normalize as sk_normalize
 
 warnings.filterwarnings("ignore")
 
@@ -102,6 +101,14 @@ def load_step1(path: Path) -> dict:
         "patch_grid"    : tuple(int(x) for x in data["patch_grid"]),
         "image_paths"   : list(data["image_paths"]),
         "image_sizes"   : data["image_sizes"],
+        # Necessário para projetar corretamente a máscara de volta ao grid de
+        # patches em compute_fg_coherence (modo keep_ar) — mesmo padrão de
+        # step4_sam_refinement.py. Ausente em features.npz mais antigos.
+        "resize_info": (
+            data["resize_info"]
+            if "resize_info" in data.files
+            else None
+        ),
     }
 
 
@@ -168,24 +175,36 @@ def mask_to_seeds(
                   suficientemente afastados do objeto
     - bbox: caixa delimitadora exata dos pixels FG
 
+    NOTA (correção): erosion_px e dilation_px agora geram cada um o seu
+    próprio kernel circular. Antes, o kernel usado em binary_dilation()
+    era construído só a partir de erosion_px -- dilation_px existia na
+    assinatura mas nunca era lido, então passar um valor diferente pra
+    ele não tinha efeito nenhum (silenciosamente). Com os defaults
+    atuais (12 e 12) o comportamento numérico não muda; a diferença só
+    aparece se algum dia os dois raios forem calibrados para valores
+    distintos.
+
     Retorna None se a máscara estiver vazia.
     """
     mask_bool = mask > 0.5
     if not mask_bool.any():
         return None
 
-    # Kernel morfológico circular
-    r = erosion_px
-    y, x = np.ogrid[-r:r+1, -r:r+1]
-    kernel = (x**2 + y**2 <= r**2)
+    # Kernels morfológicos circulares (um para cada raio -- ver nota abaixo)
+    def _circular_kernel(radius: int) -> np.ndarray:
+        y, x = np.ogrid[-radius:radius + 1, -radius:radius + 1]
+        return x**2 + y**2 <= radius**2
+
+    erosion_kernel  = _circular_kernel(erosion_px)
+    dilation_kernel = _circular_kernel(dilation_px)
 
     # FG seguro: interior da máscara (eroded)
-    fg_safe = binary_erosion(mask_bool, structure=kernel)
+    fg_safe = binary_erosion(mask_bool, structure=erosion_kernel)
     if not fg_safe.any():
         fg_safe = mask_bool  # fallback: sem erosão
 
     # BG seguro: exterior expandido (dilated + inverted)
-    bg_safe = ~binary_dilation(mask_bool, structure=kernel)
+    bg_safe = ~binary_dilation(mask_bool, structure=dilation_kernel)
 
     def _sample(pts_arr: np.ndarray, n: int) -> list:
         if not len(pts_arr):
@@ -242,42 +261,25 @@ def check_convergence(
 # ---------------------------------------------------------------------------
 # Métricas de qualidade
 # ---------------------------------------------------------------------------
-
-def compute_fg_coherence(
-    patch_features : np.ndarray,   # (N, P, D)
-    masks          : np.ndarray,   # (N, H, W)
-    patch_grid     : tuple,
-    max_per_image  : int = 40,
-) -> float:
-    """
-    Coesão semântica cross-image do foreground.
-    Igual à E4 — permite comparar a evolução entre iterações.
-    """
-    N, P, D = patch_features.shape
-    H_p, W_p = patch_grid
-    all_feats = []
-
-    for i in range(N):
-        H_i, W_i = masks.shape[1], masks.shape[2]
-        mp = np.array(Image.fromarray(
-            (masks[i] * 255).astype(np.uint8)
-        ).resize((W_p, H_p), Image.NEAREST)) / 255.0
-
-        fg_idx = mp.flatten() > 0.5
-        if fg_idx.sum() == 0:
-            continue
-        feats = patch_features[i][fg_idx]
-        if len(feats) > max_per_image:
-            feats = feats[np.linspace(0, len(feats)-1, max_per_image, dtype=int)]
-        all_feats.append(sk_normalize(feats, axis=1))
-
-    if len(all_feats) < 2:
-        return 0.0
-    all_f  = np.vstack(all_feats)
-    sim    = all_f @ all_f.T
-    np.fill_diagonal(sim, 0.0)
-    n      = len(all_f)
-    return float(sim.sum() / (n * (n - 1))) if n > 1 else 0.0
+#
+# NOTA (correção): compute_fg_coherence NÃO é mais definida localmente.
+# A versão antiga deste arquivo comparava patches individuais (não um
+# protótipo por imagem), agrupava TODOS os patches de TODAS as imagens
+# antes de calcular similaridade (sem excluir pares da mesma imagem — só
+# a diagonal, patch contra ele mesmo, era excluída) e ignorava
+# image_sizes/resize_info ao projetar a máscara de volta ao grid de
+# patches — apesar do docstring afirmar "Igual à E4". Não era: a
+# construção real da E4 é um protótipo por imagem (média L2-normalizada
+# dos patches FG, normalizada de novo), comparado só entre pares de
+# imagens DIFERENTES. Como fg_coherence é um diagnóstico sem ground
+# truth, sem nenhum papel na decisão de convergência (isso é
+# check_convergence/mask_iou, abaixo) ou na seleção de configuração nos
+# sweeps de ablação (que usam IoU contra GT), esse bug nunca afetou
+# nenhum resultado numérico reportado no artigo — só o valor de
+# fg_coherence em si. Corrigido importando a função de verdade de
+# step4_sam_refinement.py (ver run_iterative), o que também garante que
+# o delta fg_coherence_e4→e5 seja uma comparação legítima, calculada com
+# a mesma fórmula dos dois lados.
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +295,7 @@ def run_iterative(
     init_low_res   : np.ndarray,    # (N, 256, 256)
     patch_features : np.ndarray,    # (N, P, D)
     patch_grid     : tuple,
+    resize_info    : "np.ndarray | None" = None,  # (N, 6), modo keep_ar — ver load_step1
     prompt_mode    : str   = "box_points_mask",
     max_iter       : int   = 4,
     converge_thresh: float = 0.95,
@@ -319,9 +322,13 @@ def run_iterative(
     testado — o gargalo de custo aqui é a inferência do SAM, não o
     armazenamento.
     """
-    # Importa a conversão de prompts da E4 para reutilizar
+    # Importa da E4 para reutilizar: conversão de prompts, inferência SAM 2,
+    # e o cálculo de fg_coherence (protótipo por imagem — ver nota acima de
+    # compute_fg_coherence sobre por que a versão local foi removida).
     try:
-        from step4_sam_refinement import seeds_to_sam_prompts, predict_one
+        from step4_sam_refinement import (
+            seeds_to_sam_prompts, predict_one, compute_fg_coherence,
+        )
     except ImportError:
         print("[ERRO] step4_sam_refinement.py não encontrado no mesmo diretório.")
         sys.exit(1)
@@ -336,7 +343,9 @@ def run_iterative(
     mask_history = [curr_masks.copy()] if save_mask_history else None
 
     # Histórico de métricas: iteração 0 = estado inicial da E4
-    coh_0 = compute_fg_coherence(patch_features, curr_masks, patch_grid)
+    coh_0 = compute_fg_coherence(
+        patch_features, curr_masks, patch_grid, image_sizes, resize_info
+    )
     history = [{
         "iter"       : 0,
         "iou_mean"   : float(curr_iou.mean()),
@@ -428,7 +437,9 @@ def run_iterative(
         converged, stability = check_convergence(
             prev_masks, curr_masks, converge_thresh
         )
-        coh = compute_fg_coherence(patch_features, curr_masks, patch_grid)
+        coh = compute_fg_coherence(
+            patch_features, curr_masks, patch_grid, image_sizes, resize_info
+        )
 
         entry = {
             "iter"        : it,
@@ -467,6 +478,8 @@ def run_iterative(
         "history"      : history,
         "n_iters_run"  : n_iters_run,
         "converged"    : converged,
+        "iou_gain"     : iou_gain,          # ganho total E4→E5, IoU SAM
+        "coh_gain"     : coh_gain,          # ganho total E4→E5, fg_coherence
         "mask_history" : np.stack(mask_history, axis=0) if save_mask_history else None,
         # shape (n_iters_run+1, N, H, W) — índice 0 = estado inicial (E4)
     }
@@ -497,6 +510,8 @@ def save_iterative(
         history        = history_arr,
         n_iters_run    = np.array(result["n_iters_run"]),
         converged      = np.array(result["converged"]),
+        iou_gain       = np.array(result["iou_gain"]),
+        coh_gain       = np.array(result["coh_gain"]),
         image_paths    = image_paths,
         image_sizes    = image_sizes,
     )
@@ -511,13 +526,27 @@ def save_iterative(
 def load_iterative(path: Path) -> dict:
     """Interface de carregamento para análise pós-pipeline."""
     data = np.load(path, allow_pickle=True)
+    history = list(data["history"])
+
+    # iou_gain/coh_gain: presentes em arquivos gerados a partir desta
+    # correção; para arquivos mais antigos, recalcula a partir do
+    # history (iteração final − iteração 0), que sempre esteve presente.
+    if "iou_gain" in data.files:
+        iou_gain = float(data["iou_gain"])
+        coh_gain = float(data["coh_gain"])
+    else:
+        iou_gain = float(history[-1]["iou_mean"] - history[0]["iou_mean"])
+        coh_gain = float(history[-1]["fg_coherence"] - history[0]["fg_coherence"])
+
     return {
         "final_masks"  : data["final_masks"],
         "iou_scores"   : data["iou_scores"],
         "low_res_masks": data["low_res_masks"],
-        "history"      : list(data["history"]),
+        "history"      : history,
         "n_iters_run"  : int(data["n_iters_run"]),
         "converged"    : bool(data["converged"]),
+        "iou_gain"     : iou_gain,
+        "coh_gain"     : coh_gain,
         "image_paths"  : list(data["image_paths"]),
         "image_sizes"  : data["image_sizes"],
         # mask_history só existe em arquivos gerados com save_mask_history=True
@@ -888,6 +917,7 @@ def main():
     image_sizes    = step1["image_sizes"]
     patch_features = step1["patch_features"]
     patch_grid     = step1["patch_grid"]
+    resize_info    = step1.get("resize_info")
     init_masks     = step4["refined_masks"]
     init_iou       = step4["iou_scores_sam"]
     init_low_res   = step4["low_res_masks"]
@@ -913,6 +943,7 @@ def main():
         init_low_res    = init_low_res,
         patch_features  = patch_features,
         patch_grid      = patch_grid,
+        resize_info     = resize_info,
         prompt_mode     = args.prompt_mode,
         max_iter        = args.max_iter,
         converge_thresh = args.converge_thresh,

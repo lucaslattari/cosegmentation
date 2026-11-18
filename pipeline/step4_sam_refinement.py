@@ -222,12 +222,12 @@ def seeds_to_sam_prompts(
         pt_coords, pt_labels = [], []
 
         for pt in seed["fg_points"]:
-            row, col = (pt[0], pt[1]) if isinstance(pt, (list, tuple)) else (pt[0], pt[1])
+            row, col = pt[0], pt[1]
             pt_coords.append([col, row])    # X=col, Y=row
             pt_labels.append(1)
 
         for pt in seed["bg_points"]:
-            row, col = (pt[0], pt[1]) if isinstance(pt, (list, tuple)) else (pt[0], pt[1])
+            row, col = pt[0], pt[1]
             pt_coords.append([col, row])
             pt_labels.append(0)
 

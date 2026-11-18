@@ -13,29 +13,27 @@
 # USO:
 #   bash run_pipeline.sh [OPÇÕES]
 #   bash run_pipeline.sh [OPÇÕES] --set icoseg16
-#   bash run_pipeline.sh [OPÇÕES] --set full
 #   bash run_pipeline.sh [OPÇÕES] --set icoseg38
 #   bash run_pipeline.sh [OPÇÕES] --set pascal
-#   bash run_pipeline.sh [OPÇÕES] --set msrc
 #   bash run_pipeline.sh [OPÇÕES] Pandas Kite Ferrari
 #
 # EXEMPLOS:
 #   bash run_pipeline.sh
 #   bash run_pipeline.sh --set icoseg16
-#   bash run_pipeline.sh --set full
+#   bash run_pipeline.sh --set icoseg38
 #   bash run_pipeline.sh Pandas Kite
 #   bash run_pipeline.sh --from-step 3 --set icoseg16
-#   bash run_pipeline.sh --steps 1,2 --set full
-#   bash run_pipeline.sh --dry-run --set full
+#   bash run_pipeline.sh --steps 1,2 --set icoseg38
+#   bash run_pipeline.sh --dry-run --set icoseg38
 #   bash run_pipeline.sh --force --visualize Pandas
-#   bash run_pipeline.sh --no-sam --set full
+#   bash run_pipeline.sh --no-sam --set icoseg38
 #   bash run_pipeline.sh --export --set icoseg16
-#   bash run_pipeline.sh --set full --export
+#   bash run_pipeline.sh --set icoseg38 --export
 #   bash run_pipeline.sh --set icoseg38 --export
 #   bash run_pipeline.sh --set icoseg38 --affected-only --export
 #
 # OPÇÕES:
-#   --set NOME          Set: icoseg16, full, icoseg38, pascal ou msrc (default: icoseg16)
+#   --set NOME          Set: icoseg16, icoseg38 ou pascal (default: icoseg16)
 #                       full = protocolo semântico legado; icoseg38 = 38 grupos originais
 #   --affected-only     Com --set icoseg38, executa somente os 15 grupos que eram
 #                       fundidos no protocolo semântico (164 imagens)
@@ -59,7 +57,8 @@
 #   --no-eval           Pula avaliação contra ground truth
 #   --no-lock           Não usa lock automático contra execuções simultâneas
 #   --max-images N      Limita imagens por coleção
-#   selected/all        Atalhos compatíveis para --set icoseg16 / --set full
+#   selected             Atalho compatível para --set icoseg16
+#   all                  Atalho compatível para --set icoseg38
 #   --help              Mostra esta ajuda
 #
 # CHECKPOINTS / RETOMADA:
@@ -101,12 +100,11 @@ ICOSEG_DATASET_ROOT="${ICOSEG_DATASET_ROOT:-$PROJECT_ROOT/datasets/icoseg}"
 ICOSEG_ROOT="$ICOSEG_DATASET_ROOT/images"
 GT_ROOT="$ICOSEG_DATASET_ROOT/ground_truth"
 
-# Dataset ativo. Para iCoseg, aponta para ICOSEG_ROOT. Para PASCAL/MSRC,
+# Dataset ativo. Para iCoseg, aponta para ICOSEG_ROOT. Para PASCAL,
 # aponta para datasets/<nome>/images e usa 1 subpasta = 1 grupo.
 DATASET_ROOT="$ICOSEG_ROOT"
 COLLECTION_MODE="indexed"
 PASCAL_COSEG_ROOT="${PASCAL_COSEG_ROOT:-$PROJECT_ROOT/datasets/PASCAL}"
-MSRC_COSEG_ROOT="${MSRC_COSEG_ROOT:-$PROJECT_ROOT/datasets/msrc_coseg}"
 FEATURES_ROOT="${FEATURES_ROOT:-$PROJECT_ROOT/features}"
 RESULTS_ROOT="${RESULTS_ROOT:-$PROJECT_ROOT/results}"
 LOG_ROOT="${LOG_ROOT:-$PROJECT_ROOT/logs}"
@@ -122,8 +120,8 @@ PYTHON="${PYTHON:-python3}"
 LOG_DIR=""
 
 # Set experimental padrão. Pode ser sobrescrito por:
-#   ICOSEG_SET=full bash run_pipeline.sh
-#   bash run_pipeline.sh --set full
+#   ICOSEG_SET=icoseg38 bash run_pipeline.sh
+#   bash run_pipeline.sh --set icoseg38
 ICOSEG_SET="${ICOSEG_SET:-icoseg16}"
 EXP_NAME=""
 # Sufixo opcional pro nome do experimento — permite rodar o MESMO --set
@@ -155,21 +153,41 @@ DINO_FEATURE_MODE="l2"
 # medir o tempo de inferência antes de manter este default.
 SAM_MODEL="facebook/sam2.1-hiera-large"
 
-# E2_TOP_K / E2_TEMPERATURE calibrados via sweep de ablação
-# (ablation/run_step2_correspondence_sweep.sh) sobre as mesmas 6 classes do
-# iCoseg usadas para calibrar a Etapa 1 e a Etapa 3, alimentado pela config
-# única de Etapa 1 já validada (vits14/518/keep_ar/l2). Critério: maior
-# gt_best_iou MÉDIO entre as 6 classes (mesmo critério de generalização
-# usado nas outras etapas, não o melhor por classe individual).
-# top_k=60 foi onde a taxa de ganho por passo caiu de forma clara pela
-# primeira vez (delta/step: 0.0034 -> 0.0026 -> 0.0026 -> 0.0019) E onde as
-# duas classes mais fracas da validação (Brown Bear N=5, Taj Mahal N=10)
-# atingiram o teto físico de pares possíveis (C(N,2) pares total) — não dá
-# pra melhorá-las mais só aumentando top_k, então parar aqui não deixa
-# ganho na mesa nas classes que mais precisavam. temperature=0.05 dominou
-# 0.02 e 0.10 em todo valor de top_k testado (já era o default).
-E2_TOP_K=60
-E2_TEMPERATURE=0.05
+# E2_TOP_K / E2_TEMPERATURE — recalibrados via sweep de ablação
+# (ablation/e2/e2_sweep_correspondence.sh) sobre as 14 classes curadas
+# (não mais as 6 originais), alimentado pela config única de Etapa 1 já
+# validada (vits14/518/keep_ar/l2), com --orientation spatial e
+# --degree_alpha 0.10 explícitos (bug corrigido: essas duas flags
+# faltavam nas rodadas de sweep anteriores e o script rodava com os
+# defaults internos de step2_correspondence.py, não os de produção).
+#
+# top_k=60 (calibração original, 6 classes) subestimava o ótimo: nas 14
+# classes, gt_best_iou continua subindo de forma monotônica até
+# top_k~250, onde a taxa de ganho por passo finalmente cai para perto de
+# zero (Δ de 60→250: +0.070 de IoU; Δ de 250→400, testado à parte:
+# apenas +0.002). Das 14 classes, 10 já saturam o número de pares
+# possíveis (C(N,2)) até top_k=300; as 4 maiores (Liverpool, Statue,
+# Kite, Panda) seguem contribuindo sinal novo até o fim do grid testado.
+# orientation_accuracy permanece estável (~0.925-0.928) em todo o range
+# de top_k — não há trade-off entre top_k e qualidade da decisão de
+# orientação, ao contrário do que uma rodada anterior (com --orientation
+# ausente, portanto testando a heurística errada) havia sugerido.
+#
+# top_k=250 foi validado end-to-end (pipeline completo E1-E5, avaliação
+# honesta, protocolo icoseg38, 38 classes/643 imagens) contra o baseline
+# top_k=60: accuracy 0.9253->0.9423 (+0.0170), iou 0.7601->0.7734
+# (+0.0133), e reduziu de 23 para 8 o número de imagens que precisaram
+# de inversão FG/BG pelo oráculo — um efeito colateral positivo sobre a
+# decisão de orientação que o diagnóstico isolado de Etapa 2 não previa
+# (só aparece após passar por E3/E4/E5).
+#
+# degree_alpha=0.25/0.50 foram testados no mesmo protocolo e NÃO
+# confirmaram o padrão sugerido por rodadas antigas (icoseg_full,
+# provavelmente calibradas sob orientação cls, não spatial): 0.25 é
+# neutro (leve ganho de accuracy, leve perda de IoU) e 0.50 piora nos
+# dois eixos. degree_alpha=0.10 permanece o default.
+E2_TOP_K="${E2_TOP_K:-250}"
+E2_TEMPERATURE="${E2_TEMPERATURE:-0.05}"
 
 # Reponderação parcial por grau antes do NCut.
 # W'_{ij} = W_{ij} / (d_i d_j)^alpha
@@ -184,9 +202,9 @@ E2_TEMPERATURE=0.05
 #   0.50 -> IoU média 0.6557
 #
 # Pode ser sobrescrito por:
-#   E2_DEGREE_ALPHA=0.25 bash pipeline/run_pipeline.sh --set full --export
+#   E2_DEGREE_ALPHA=0.25 bash pipeline/run_pipeline.sh --set icoseg38 --export
 # ou pela CLI:
-#   bash pipeline/run_pipeline.sh --degree-alpha 0.25 --set full --export
+#   bash pipeline/run_pipeline.sh --degree-alpha 0.25 --set icoseg38 --export
 E2_DEGREE_ALPHA="${E2_DEGREE_ALPHA:-0.10}"
 
 # Heurística de orientação FG/BG da Etapa 2.
@@ -250,10 +268,33 @@ E2_BG_TOP_FG_FRACTION="${E2_BG_TOP_FG_FRACTION:-0.10}"
 # contaminada (0.698->0.419), se recupera e melhora (0.698->0.796) na
 # versão consistente — confirma que aquela regressão era artefato de
 # inputs inconsistentes, não um trade-off real do método.
+# TENTATIVA DE ATUALIZAÇÃO (revertida): kn=15 foi calibrado sob E2_TOP_K=60
+# (ver comentário anterior), desatualizado frente ao E2_TOP_K=250 atual.
+# Um sweep de E3 sob E2_TOP_K=250 (ablation_results/e3_sweep_final, 14
+# classes do protocolo `semantic`/icoseg16, classes fundidas em superclasses)
+# apontou kn=40 como vencedor agregado (mean_proxy=0.7185).
+#
+# kn=40 foi testado em produção no protocolo icoseg38 completo (38 pastas
+# originais, SEM fusão de subgrupos) e REJEITADO: accuracy piorou
+# (0.9423->0.9391) e IoU ficou estatisticamente igual (0.7734->0.7741),
+# mas com degradação catastrófica em classes individuais — Gymnastics-1
+# perdeu 28.3pp de IoU (0.446->0.163), Skating-ISU Grand Prix perdeu 20.5pp,
+# mais 8 classes perderam 2-9pp. Causa provável: kn=40 foi calibrado sob o
+# protocolo `semantic` (Gymnastics como superclasse fundida, mais imagens
+# por grupo) e não generaliza para os sub-splits pequenos do icoseg38
+# (Gymnastics-1/2/3 como pastas separadas) — Gymnastics-2/3 até melhoraram,
+# só Gymnastics-1 (grupo pequeno) desabou, confirmando o padrão.
+#
+# Falha o critério duplo (melhora média E sem degradação catastrófica por
+# classe) — kn=15 mantido como baseline de produção. kn=40 nunca foi
+# validado sob o protocolo icoseg38 propriamente dito; se quiser revisitar,
+# recalibrar E3 diretamente sob icoseg38 (não icoseg16) antes de trocar de
+# novo.
 E3_N_CLUSTERS=8
 E3_K_NEIGHBORS=15
 E3_N_SPECTRAL=8
 E3_SALIENCY_ALPHA=0.5
+E3_FG_THRESHOLD="${E3_FG_THRESHOLD:-0.5}"
 # fg_decision_mode="e2_border_topk" é EXPERIMENTAL — testado em ablação
 # (ablation/analyze_geometric_priors.py) nas 14 classes do icoseg16.
 # Melhora média e pior-caso em relação ao modo "saliency" (produção),
@@ -830,17 +871,11 @@ parse_args() {
             --exp-suffix=*)
                 EXP_SUFFIX="${1#*=}"; EXP_SUFFIX_WAS_EXPLICIT="yes"; shift
                 ;;
-            all|full|icoseg_full)
-                ICOSEG_SET="full"; shift
-                ;;
-            icoseg38|full38|official38)
+            icoseg38|all|full|full38|official38|icoseg_full)
                 ICOSEG_SET="icoseg38"; shift
                 ;;
             pascal|pascal_voc|pascal-voc)
                 ICOSEG_SET="pascal"; shift
-                ;;
-            msrc|msrc7)
-                ICOSEG_SET="msrc"; shift
                 ;;
             selected|icoseg16|subset)
                 ICOSEG_SET="icoseg16"; shift
@@ -873,17 +908,7 @@ configure_experiment_dirs() {
             GT_INDEX="$PROJECT_ROOT/gt_index.json"
             COLLECTION_MODE="indexed"
             ;;
-        full|all|icoseg_full)
-            ICOSEG_SET="full"
-            EXP_NAME="icoseg_full"
-            STEP1_PROTOCOL="semantic"
-            ICOSEG_INDEX="$PROJECT_ROOT/icoseg_index.json"
-            DATASET_ROOT="$ICOSEG_ROOT"
-            GT_ROOT="$ICOSEG_DATASET_ROOT/ground_truth"
-            GT_INDEX="$PROJECT_ROOT/gt_index.json"
-            COLLECTION_MODE="indexed"
-            ;;
-        icoseg38|full38|official38)
+        icoseg38|all|full|full38|official38|icoseg_full)
             ICOSEG_SET="icoseg38"
             EXP_NAME="icoseg38"
             STEP1_PROTOCOL="icoseg38"
@@ -902,18 +927,9 @@ configure_experiment_dirs() {
             GT_INDEX="$PASCAL_COSEG_ROOT/gt_index.json"
             COLLECTION_MODE="folder"
             ;;
-        msrc|msrc7)
-            ICOSEG_SET="msrc"
-            EXP_NAME="msrc_coseg"
-            STEP1_PROTOCOL="semantic"
-            DATASET_ROOT="$MSRC_COSEG_ROOT/images"
-            GT_ROOT="$MSRC_COSEG_ROOT/ground_truth"
-            GT_INDEX="$MSRC_COSEG_ROOT/gt_index.json"
-            COLLECTION_MODE="folder"
-            ;;
         *)
             err "Set inválido: $ICOSEG_SET"
-            echo "Use: --set icoseg16, --set full, --set icoseg38, --set pascal ou --set msrc"
+            echo "Use: --set icoseg16, --set icoseg38 ou --set pascal"
             exit 1
             ;;
     esac
@@ -1046,10 +1062,6 @@ resolve_classes() {
             CLASSES=("${ICOSEG_SELECTED_CLASSES[@]}")
             log "Usando subconjunto iCoseg atual: ${#CLASSES[@]} classes"
             ;;
-        full)
-            mapfile -t CLASSES < <(get_all_classes)
-            log "Usando iCoseg completo no protocolo semântico: ${#CLASSES[@]} classes"
-            ;;
         icoseg38)
             # Garante que o índice oficial exista antes de selecionar classes.
             if [[ "$AFFECTED_ONLY" == "yes" ]]; then
@@ -1091,17 +1103,9 @@ resolve_classes() {
 
             ok "PASCAL validado: 20 classes, 1037 imagens e 1037 GTs"
             ;;
-        msrc)
-            mapfile -t CLASSES < <(get_all_classes)
-            log "Usando MSRC CoSeg: ${#CLASSES[@]} grupos"
-            if [[ ${#CLASSES[@]} -ne 7 ]]; then
-                err "MSRC-70 deveria conter 7 grupos; encontrados ${#CLASSES[@]}."
-                exit 1
-            fi
-            ;;
         *)
             err "Set inválido: $ICOSEG_SET"
-            echo "Use: --set icoseg16, --set full, --set icoseg38, --set pascal ou --set msrc"
+            echo "Use: --set icoseg16, --set icoseg38 ou --set pascal"
             exit 1
             ;;
     esac
@@ -1294,6 +1298,7 @@ run_class() {
                     --k_neighbors "$E3_K_NEIGHBORS" \
                     --n_spectral "$E3_N_SPECTRAL" \
                     --saliency_alpha "$E3_SALIENCY_ALPHA" \
+                    --fg_threshold "$E3_FG_THRESHOLD" \
                     --fg_decision_mode "$E3_FG_DECISION_MODE" \
                     "${E3_EXTRA_FLAGS[@]}"; then
                 if ! finish_validated_step "$SAFE_NAME" "E3" "cosaliency.npz" valid_step3_output "$FEAT_DIR/cosaliency.npz"; then
@@ -1606,7 +1611,7 @@ main() {
     echo "  DINOv2:       $DINOV2_MODEL | img_size=$DINO_IMG_SIZE | resize=$DINO_RESIZE | feature_mode=$DINO_FEATURE_MODE"
     echo "  E2:           top_k=$E2_TOP_K | temperature=$E2_TEMPERATURE | orientation=$E2_ORIENTATION | degree_alpha=$E2_DEGREE_ALPHA"
     echo "  E2B:          mode=$E2_BG_SUPPRESSION | lambda=$E2_BG_LAMBDA | gamma=$E2_BG_GAMMA | border_width=$E2_BG_BORDER_WIDTH | top_fg=$E2_BG_TOP_FG_FRACTION"
-    echo "  E3:           clusters=$E3_N_CLUSTERS | k_neighbors=$E3_K_NEIGHBORS | spectral=$E3_N_SPECTRAL | alpha=$E3_SALIENCY_ALPHA"
+    echo "  E3:           clusters=$E3_N_CLUSTERS | k_neighbors=$E3_K_NEIGHBORS | spectral=$E3_N_SPECTRAL | alpha=$E3_SALIENCY_ALPHA | fg_threshold=$E3_FG_THRESHOLD"
     echo "  E3 empty-FG:  mode=$E3_EMPTY_FG_BYPASS | top_fraction=$E3_EMPTY_FG_TOP_FRACTION | trigger=exact-zero"
 
     if [[ "$DRY_RUN" == "yes" ]]; then

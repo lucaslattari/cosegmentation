@@ -34,7 +34,7 @@ export LC_NUMERIC=C
 #     -a ./ablation/analyze_step5_iterative.py \
 #     -o ./step5_sweep \
 #     -g ./gt_index.json \
-#     --step4_filter "pm-box_points_mask__ni-2__m-sam2.1-hiera-large"
+#     --step4_filter "pm-box_points_mask__ni-2__m-sam2.1-hiera-small"
 #
 # Variáveis de ambiente úteis:
 #   PYTHON_BIN=python3
@@ -43,7 +43,7 @@ export LC_NUMERIC=C
 #   MAX_ITER=6                 # teto de iterações por execução (fixo, generoso)
 #   CONVERGE_THRESH=0.99       # alto o suficiente pra quase nunca parar cedo
 #   PROMPT_MODE_STR="box_points_mask"   # deve bater com o vencedor da Etapa 4
-#   SAM_MODEL_STR="facebook/sam2.1-hiera-large"  # idem
+#   SAM_MODEL_STR="facebook/sam2.1-hiera-small"  # idem — deve bater com o vencedor real da E4
 #   STEP1_CONFIG_FILTER=""     # substring para filtrar .npz da E1
 #   STEP4_CONFIG_FILTER=""     # substring para filtrar .npz da E4
 #   RUN_ANALYZER=1
@@ -122,16 +122,16 @@ Variáveis de ambiente úteis:
   MAX_ITER=6
   CONVERGE_THRESH=0.99
   PROMPT_MODE_STR="box_points_mask"
-  SAM_MODEL_STR="facebook/sam2.1-hiera-large"
+  SAM_MODEL_STR="facebook/sam2.1-hiera-small"
   STEP1_CONFIG_FILTER="vits14__img-518__resize-keep_ar__layer-last__feat-l2"
-  STEP4_CONFIG_FILTER="pm-box_points_mask__ni-2__m-sam2.1-hiera-large"
+  STEP4_CONFIG_FILTER="pm-box_points_mask__ni-2__m-sam2.1-hiera-small"
   GT_INDEX=/caminho/gt_index.json
   RUN_ANALYZER=1
   RESUME=1
 
 Exemplo:
   STEP1_CONFIG_FILTER="vits14__img-518__resize-keep_ar__layer-last__feat-l2" \\
-  STEP4_CONFIG_FILTER="pm-box_points_mask__ni-2__m-sam2.1-hiera-large" \\
+  STEP4_CONFIG_FILTER="pm-box_points_mask__ni-2__m-sam2.1-hiera-small" \\
   N_FG_PTS_STR="3 5 8" N_BG_PTS_STR="3 5 8" \\
   $0 -1 ./features_sweep_6classes/npz -4 ./sam_sweep_6classes_stage2/npz \\
      -g ./gt_index.json
@@ -201,7 +201,7 @@ done
 read -r -a N_FG_PTS_LIST <<< "${N_FG_PTS_STR:-3 5 8}"
 read -r -a N_BG_PTS_LIST <<< "${N_BG_PTS_STR:-3 5 8}"
 read -r -a PROMPT_MODES  <<< "${PROMPT_MODE_STR:-box_points_mask}"
-read -r -a SAM_MODELS    <<< "${SAM_MODEL_STR:-facebook/sam2.1-hiera-large}"
+read -r -a SAM_MODELS    <<< "${SAM_MODEL_STR:-facebook/sam2.1-hiera-small}"
 
 # Utilitários
 sanitize() {
@@ -275,10 +275,20 @@ for cls in "${CLASSES[@]}"; do
   while IFS= read -r -d '' e1_npz; do
     e1_base="$(basename "$e1_npz" .npz)"
     [[ -n "$STEP1_CONFIG_FILTER" ]] && ! echo "$e1_base" | grep -q "$STEP1_CONFIG_FILTER" && continue
+    # Mesmo ajuste feito no sweep da Etapa 4: o E1 pode ter o prefixo
+    # "<Classe>__" no stem (redundante, já que o arquivo está na pasta da
+    # classe) enquanto o E4 não repete esse prefixo (STEM da E4 vem do
+    # e3_stem, que também não tem prefixo de classe). Tira o prefixo de
+    # ambos antes de comparar, em vez de exigir e1_base inteiro como
+    # prefixo literal do e4_base.
+    e1_match="$e1_base"
+    [[ "$e1_match" == "${safe_cls}__"* ]] && e1_match="${e1_match#${safe_cls}__}"
     while IFS= read -r -d '' e4_npz; do
       e4_base="$(basename "$e4_npz" .npz)"
       [[ -n "$STEP4_CONFIG_FILTER" ]] && ! echo "$e4_base" | grep -q "$STEP4_CONFIG_FILTER" && continue
-      [[ "$e4_base" == "${e1_base}"* ]] || continue
+      e4_match="$e4_base"
+      [[ "$e4_match" == "${safe_cls}__"* ]] && e4_match="${e4_match#${safe_cls}__}"
+      [[ "$e4_match" == "${e1_match}"* ]] || continue
       pairs+=("${e1_npz}|${e4_npz}")
     done < <(find "$e4_dir" -maxdepth 1 -name "*.npz" -print0 | sort -z)
   done < <(find "$e1_dir" -maxdepth 1 -name "*.npz" -print0 | sort -z)

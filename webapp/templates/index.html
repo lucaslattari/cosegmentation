@@ -11,7 +11,7 @@
     <header>
       <span class="eyebrow">ANÁLISE LOCAL</span>
       <h1>Cosegmentation Web</h1>
-      <p>Arraste uma coleção de imagens, audite somente as features da Etapa 1 ou execute o pipeline completo.</p>
+      <p>Envie manualmente uma coleção de imagens, audite etapas isoladas ou aplique a essa coleção o preset fixo de produção do pipeline completo.</p>
     </header>
 
     <form id="run-form" class="card" action="{{ url_for('create_run') }}" method="post" enctype="multipart/form-data">
@@ -40,7 +40,7 @@
         </label>
         <label class="mode-option">
           <input type="radio" name="mode" value="pipeline">
-          <span><strong>Pipeline completo</strong><small>Etapas 1–5, incluindo SAM 2</small></span>
+          <span><strong>Pipeline completo</strong><small>Executa E1 → E2 → E2B → E3 → E4 → E5 sobre a coleção enviada, com o preset validado de produção</small></span>
         </label>
       </fieldset>
 
@@ -82,19 +82,45 @@
       <div id="step2-options" class="options-grid hidden">
         <div>
           <label for="top_k">Quantidade de pares (top_k)</label>
-          <input id="top_k" name="top_k" type="number" min="1" max="500" step="1" value="10">
+          <input id="top_k" name="top_k" type="number" min="1" max="500" step="1" value="250">
         </div>
         <div>
           <label for="temperature">Temperatura</label>
           <input id="temperature" name="temperature" type="number" min="0.001" max="1" step="0.001" value="0.05">
         </div>
-        <p class="options-note">O número efetivo de pares é limitado por N(N−1)/2. Temperaturas menores deixam as afinidades mais nítidas.</p>
+        <div>
+          <label for="orientation">Orientação FG/BG</label>
+          <select id="orientation" name="orientation">
+            <option value="spatial" selected>Spatial (produção)</option>
+            <option value="cls">CLS saliency</option>
+          </select>
+        </div>
+        <div>
+          <label for="degree_alpha">Reponderação por grau (α)</label>
+          <input id="degree_alpha" name="degree_alpha" type="number" min="0" max="1" step="0.01" value="0.10">
+        </div>
+        <p class="options-note">Defaults de produção: top_k=250, temperature=0.05, orientation=spatial e degree_alpha=0.10.</p>
       </div>
 
       <div id="step3-options" class="options-grid hidden">
         <div>
+          <label for="bg_suppression">E2B — supressão de background</label>
+          <select id="bg_suppression" name="bg_suppression">
+            <option value="recurrence" selected>Recorrência (produção)</option>
+            <option value="none">Desativada</option>
+          </select>
+        </div>
+        <div>
+          <label for="bg_lambda">E2B λ</label>
+          <input id="bg_lambda" name="bg_lambda" type="number" min="0" step="0.05" value="0.50">
+        </div>
+        <div>
+          <label for="bg_gamma">E2B γ</label>
+          <input id="bg_gamma" name="bg_gamma" type="number" min="0" max="1" step="0.05" value="0.00">
+        </div>
+        <div>
           <label for="k_neighbors">Vizinhos no grafo (k_neighbors)</label>
-          <input id="k_neighbors" name="k_neighbors" type="number" min="1" max="100" step="1" value="10">
+          <input id="k_neighbors" name="k_neighbors" type="number" min="1" max="100" step="1" value="15">
         </div>
         <div>
           <label for="n_spectral">Componentes espectrais</label>
@@ -102,21 +128,24 @@
         </div>
         <div>
           <label for="n_clusters">Clusters K-means</label>
-          <input id="n_clusters" name="n_clusters" type="number" min="2" max="32" step="1" value="5">
+          <input id="n_clusters" name="n_clusters" type="number" min="2" max="32" step="1" value="8">
         </div>
         <div>
-          <label for="fg_threshold">Threshold foreground</label>
-          <input id="fg_threshold" name="fg_threshold" type="number" min="0" max="1" step="0.01" value="0.5">
-        </div>
-        <div>
-          <label for="saliency_alpha">Peso do prior espacial (α)</label>
+          <label for="saliency_alpha">Peso da saliência espacial (α)</label>
           <input id="saliency_alpha" name="saliency_alpha" type="number" min="0" max="1" step="0.05" value="0.5">
         </div>
-        <div class="checkbox-group">
-          <label class="checkbox-option"><input name="refine" type="checkbox"> Refinamento NCut intra-imagem (experimental)</label>
-          <label class="checkbox-option"><input name="adaptive_clusters" type="checkbox" checked> Clusters adaptativos ao padding</label>
+        <div>
+          <label for="empty_fg_bypass">Fallback de foreground vazio</label>
+          <select id="empty_fg_bypass" name="empty_fg_bypass">
+            <option value="e2_topk" selected>E2 top-k (produção)</option>
+            <option value="none">Desativado</option>
+          </select>
         </div>
-        <p class="options-note">A grade de ablação típica varia n_clusters ∈ {4,5,6,8}, k_neighbors ∈ {8,10,15}, threshold ∈ {0.4,0.5,0.6} e α ∈ {0.2,0.4,0.6,0.8}.</p>
+        <div>
+          <label for="empty_fg_top_fraction">Fração E2 no fallback</label>
+          <input id="empty_fg_top_fraction" name="empty_fg_top_fraction" type="number" min="0.01" max="1" step="0.01" value="0.20">
+        </div>
+        <p class="options-note">Quando E2B está ativa, a E3 recebe <code>correspondence_bg.npz</code>. O fallback empty-FG só intervém quando a máscara normal da E3 contém exatamente zero patches de foreground.</p>
       </div>
 
       <div id="step4-options" class="options-grid hidden">
@@ -124,9 +153,9 @@
           <label for="sam_model">Modelo SAM 2</label>
           <select id="sam_model" name="sam_model">
             <option value="facebook/sam2.1-hiera-tiny">SAM 2.1 Hiera Tiny</option>
-            <option value="facebook/sam2.1-hiera-small" selected>SAM 2.1 Hiera Small</option>
+            <option value="facebook/sam2.1-hiera-small">SAM 2.1 Hiera Small</option>
             <option value="facebook/sam2.1-hiera-base-plus">SAM 2.1 Hiera Base+</option>
-            <option value="facebook/sam2.1-hiera-large">SAM 2.1 Hiera Large</option>
+            <option value="facebook/sam2.1-hiera-large" selected>SAM 2.1 Hiera Large (produção)</option>
             <option value="facebook/sam2-hiera-tiny">SAM 2 Hiera Tiny</option>
             <option value="facebook/sam2-hiera-small">SAM 2 Hiera Small</option>
             <option value="facebook/sam2-hiera-base-plus">SAM 2 Hiera Base+</option>
@@ -145,7 +174,7 @@
           <label for="sam_n_iter">Iterações SAM</label>
           <input id="sam_n_iter" name="sam_n_iter" type="number" min="1" max="5" step="1" value="2">
         </div>
-        <p class="options-note">A auditoria compara E3 e E4 por imagem. Com GT, calcula IoU real, ganho do SAM e mapas de TP, FP e FN.</p>
+        <p class="options-note">A auditoria compara E3 e E4 por imagem. O modelo de produção atual é SAM 2.1 Hiera Large com box + pontos + máscara e 2 iterações.</p>
       </div>
 
       <label>Imagens (mínimo de duas)</label>
